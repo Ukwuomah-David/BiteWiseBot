@@ -26,6 +26,7 @@ def create_payment_link(user_id, email=None):
         email = f"{user_id}@bitewise.bot"
 
     url = "https://api.paystack.co/transaction/initialize"
+    
 
     headers = {
         "Authorization": f"Bearer {PAYSTACK_SECRET}",
@@ -36,15 +37,20 @@ def create_payment_link(user_id, email=None):
         "email": email,
         "amount": 100000,
         "metadata": {
-            "telegram_id": user_id
-        }
+            "telegram_id": str(user_id),
+            "plan": "premium",
+            "source": "bitewise_bot"
+        },
+        "callback_url": "https://your-app.onrender.com/payment-success"
     }
 
     res = requests.post(url, json=data, headers=headers)
-    response = res.json()
 
-    return response["data"]["authorization_url"]
-
+    try:
+        response = res.json()
+        return response["data"]["authorization_url"]
+    except:
+        return PAYSTACK_LINK
 
 # =========================
 # STATES
@@ -137,15 +143,31 @@ def smart_recommend(user_id, meal_type):
     items = get_menu_items()
     budget = int(user.get("budget", 1500))
     plan = user.get("plan", "free")
+    allergies = parse_list(user.get("allergies"))
 
+    # 🔥 Filter by budget
     filtered = [i for i in items if i["price"] <= budget] or items
 
+    # 🔥 Filter allergies (basic keyword filter)
+    def is_safe(item):
+        name = item["item_name"].lower()
+        for a in allergies:
+            if a in name:
+                return False
+        return True
+
+    filtered = [i for i in filtered if is_safe(i)]
+
+    if not filtered:
+        filtered = items  # fallback
+
+    # FREE USERS
     if plan == "free":
         return random.sample(filtered, min(3, len(filtered)))
 
-    return filtered[:5]
-
-# =========================
+    # PREMIUM USERS (sorted by price efficiency)
+    filtered = sorted(filtered, key=lambda x: x["price"])
+    return filtered[:5]# =========================
 # PLAN
 # =========================
 def is_premium(user_id):
@@ -169,14 +191,19 @@ def build_meal_text(user_id, name):
 
     text = f"🍽✨ {name}'s Smart Meal Plan\n\n"
 
+    total_cost = 0
+
     for meal in selected:
         recs = smart_recommend(user_id, meal)
         text += f"\n🍱 {meal.upper()} 🍱\n"
+
         for r in recs:
             text += f"✔ {r['vendor_name']} - {r['item_name']} - ₦{r['price']}\n"
+            total_cost += int(r["price"])
+
+    text += f"\n💰 TOTAL ESTIMATED COST: ₦{total_cost}\n"
 
     return text
-
 # =========================
 # START
 # =========================
@@ -347,7 +374,17 @@ async def meal_done(update, context):
         buttons = [[InlineKeyboardButton("💳 Upgrade to Premium", callback_data="upgrade")]]
 
     return await safe_edit(query, text, InlineKeyboardMarkup(buttons))
+@route("go_back")
+async def go_back(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id
 
+    save_state(user_id, state=STATE_BUDGET)
+
+    return await safe_edit(
+        query,
+        "🔙 Enter your budget again:"
+    )
 @route("upgrade")
 async def upgrade(update, context):
     query = update.callback_query
@@ -362,7 +399,24 @@ async def upgrade(update, context):
             [InlineKeyboardButton("Pay Now", url=link)]
         ])
     )
+@route("reshuffle")
+async def reshuffle(update, context):
+    query = update.callback_query
+    user_id = query.from_user.id
+    name = query.from_user.first_name
 
+    if not is_premium(user_id):
+        return await query.answer("Upgrade to use reshuffle 🚫", show_alert=True)
+
+    text = build_meal_text(user_id, name)
+
+    return await safe_edit(
+        query,
+        text,
+        InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Reshuffle Again", callback_data="reshuffle")]
+        ])
+    )
 # =========================
 # PREFIX HANDLER
 # =========================
@@ -433,7 +487,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         # ✅ VALID INPUT
-        save_state(user_id, budget=budget, state=STATE_BUDGET)
+        save_state(user_id, budget=budget, state=STATE_ALLERGY)
 
         return await update.message.reply_text(
             "✅ Budget set successfully! 💰✨\n\n"

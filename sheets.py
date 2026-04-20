@@ -1,10 +1,10 @@
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
-import os
+
 # ==============================
 # CONFIG
 # ==============================
-SERVICE_FILE = os.getenv("GOOGLE_CREDS", "service_account.json")
+SERVICE_FILE = "service_account.json"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 SPREADSHEET_ID = "1NciP7t98chVepQf8BYxmlpbLc5HXUTFH7mpvL0t5Eac"
@@ -12,19 +12,9 @@ SPREADSHEET_ID = "1NciP7t98chVepQf8BYxmlpbLc5HXUTFH7mpvL0t5Eac"
 # ==============================
 # AUTH
 # ==============================
-import json
-
-if os.getenv("GOOGLE_CREDS"):
-    creds_dict = json.loads(os.getenv("GOOGLE_CREDS"))
-    creds = service_account.Credentials.from_service_account_info(
-        creds_dict,
-        scopes=SCOPES
-    )
-else:
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_FILE,
-        scopes=SCOPES
-    )
+creds = service_account.Credentials.from_service_account_file(
+    SERVICE_FILE,
+    scopes=SCOPES
 )
 
 service = build("sheets", "v4", credentials=creds)
@@ -91,13 +81,13 @@ def get_menu_items():
     return items
 
 # ==============================
-# USERS (SAFE READ)
+# USERS (UPDATED STRUCTURE)
 # ==============================
 def get_user(telegram_id):
     data = read_range("USERS!A2:G")
 
     for row in data:
-        if len(row) < 3:
+        if len(row) < 1:
             continue
 
         if str(row[0]) == str(telegram_id):
@@ -117,10 +107,10 @@ def get_user(telegram_id):
 # FIND USER ROW
 # ==============================
 def find_user_row(telegram_id):
-    data = read_range("USERS!A2:G")
+    data = read_range("USERS!A2:A")
 
     for i, row in enumerate(data, start=2):
-        if str(row[0]) == str(telegram_id):
+        if row and str(row[0]) == str(telegram_id):
             return i
 
     return None
@@ -136,58 +126,67 @@ def save_user(telegram_id, name, plan="free", budget=0):
         spreadsheetId=SPREADSHEET_ID,
         range="USERS!A:G",
         valueInputOption="USER_ENTERED",
-        body={"values": [[
-            telegram_id,
-            name,
-            plan,
-            budget,
-            "",
-            "",
-            ""
-        ]]}
+        body={
+            "values": [[telegram_id, name, plan, budget, "", "", ""]]
+        }
     ).execute()
 
 # ==============================
-# UPDATE USER (FIXED + EXPANDED)
+# UPDATE USER (FIXED FOR FSM)
 # ==============================
-def update_user(
-    telegram_id,
-    plan=None,
-    budget=None,
-    name=None,
-    state=None,
-    allergies=None,
-    meals=None
-):
+def update_user(telegram_id, plan=None, budget=None, name=None, state=None, allergies=None, meals=None):
     row = find_user_row(telegram_id)
 
     if not row:
         return
 
-    user = get_user(telegram_id)
+    if name is not None:
+        sheet.values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"USERS!B{row}",
+            valueInputOption="USER_ENTERED",
+            body={"values": [[name]]}
+        ).execute()
 
-    # merge old + new values (VERY IMPORTANT FIX)
-    name = name if name is not None else user.get("name", "")
-    plan = plan if plan is not None else user.get("plan", "free")
-    budget = budget if budget is not None else user.get("budget", 0)
-    state = state if state is not None else user.get("state", "")
-    allergies = allergies if allergies is not None else user.get("allergies", "")
-    meals = meals if meals is not None else user.get("meals", "")
+    if plan is not None:
+        sheet.values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"USERS!C{row}",
+            valueInputOption="USER_ENTERED",
+            body={"values": [[plan]]}
+        ).execute()
 
-    sheet.values().update(
-        spreadsheetId=SPREADSHEET_ID,
-        range=f"USERS!A{row}:G{row}",
-        valueInputOption="USER_ENTERED",
-        body={"values": [[
-            telegram_id,
-            name,
-            plan,
-            budget,
-            state,
-            allergies,
-            meals
-        ]]}
-    ).execute()
+    if budget is not None:
+        sheet.values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"USERS!D{row}",
+            valueInputOption="USER_ENTERED",
+            body={"values": [[budget]]}
+        ).execute()
+
+    if state is not None:
+        sheet.values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"USERS!E{row}",
+            valueInputOption="USER_ENTERED",
+            body={"values": [[state]]}
+        ).execute()
+
+    if allergies is not None:
+        sheet.values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"USERS!F{row}",
+            valueInputOption="USER_ENTERED",
+            body={"values": [[allergies]]}
+        ).execute()
+
+    if meals is not None:
+        sheet.values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"USERS!G{row}",
+            valueInputOption="USER_ENTERED",
+            body={"values": [[meals]]}
+        ).execute()
 
 # ==============================
 # UPSERT
@@ -208,5 +207,7 @@ def save_vendor_rating(user_id, vendor_id, rating):
         spreadsheetId=SPREADSHEET_ID,
         range="RATINGS!A:C",
         valueInputOption="USER_ENTERED",
-        body={"values": [[str(user_id), str(vendor_id), int(rating)]]}
+        body={
+            "values": [[str(user_id), str(vendor_id), int(rating)]]
+        }
     ).execute()
