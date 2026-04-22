@@ -167,7 +167,8 @@ def smart_recommend(user_id, meal_type):
 
     # PREMIUM USERS (sorted by price efficiency)
     filtered = sorted(filtered, key=lambda x: x["price"])
-    return filtered[:5]# =========================
+    return filtered[:5]
+# =========================
 # PLAN
 # =========================
 def is_premium(user_id):
