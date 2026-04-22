@@ -41,7 +41,7 @@ def create_payment_link(user_id, email=None):
             "plan": "premium",
             "source": "bitewise_bot"
         },
-        "callback_url": "https://your-app.onrender.com/payment-success"
+        "callback_url": "https://bitewise-webhook.onrender.com/payment-success"
     }
 
     res = requests.post(url, json=data, headers=headers)
