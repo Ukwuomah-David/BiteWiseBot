@@ -12,7 +12,9 @@ app = Flask(__name__)
 PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-
+@app.route("/")
+def home():
+    return "Webhook is live 🚀"
 # =========================
 # SUCCESS PAGE
 # =========================
