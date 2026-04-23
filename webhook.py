@@ -5,7 +5,7 @@ import hmac
 import hashlib
 import datetime
 
-from sheets import update_user, get_user
+from user_service import upgrade_user, is_premium
 
 app = Flask(__name__)
 
@@ -14,23 +14,15 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 
 # =========================
-# PAYSTACK SUCCESS PAGE (CALLBACK)
+# SUCCESS PAGE
 # =========================
 @app.route("/payment-success", methods=["GET"])
 def payment_success():
-    reference = request.args.get("reference")
-    trxref = request.args.get("trxref")
-
-    return f"""
-    <h1>✅ Payment Successful</h1>
-    <p>Reference: {reference}</p>
-    <p>Transaction: {trxref}</p>
-    <p>You can return to Telegram.</p>
-    """
+    return "<h1>✅ Payment Successful. Return to Telegram.</h1>"
 
 
 # =========================
-# VERIFY PAYSTACK SIGNATURE
+# VERIFY SIGNATURE
 # =========================
 def verify_signature(req):
     signature = req.headers.get("x-paystack-signature")
@@ -48,7 +40,7 @@ def verify_signature(req):
 
 
 # =========================
-# SCHOOL CALENDAR LOGIC
+# SCHOOL RULE
 # =========================
 def is_school_active():
     month = datetime.datetime.now().month
@@ -56,21 +48,11 @@ def is_school_active():
 
 
 # =========================
-# CHECK PREMIUM STATUS
-# =========================
-def is_already_premium(user_id):
-    user = get_user(user_id)
-    return user and user.get("plan") == "premium"
-
-
-# =========================
-# SEND TELEGRAM MESSAGE
+# TELEGRAM MESSAGE
 # =========================
 def send_telegram_message(chat_id, text):
-    if not TELEGRAM_BOT_TOKEN:
-        return
-
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
     requests.post(url, json={
         "chat_id": chat_id,
         "text": text
@@ -78,12 +60,11 @@ def send_telegram_message(chat_id, text):
 
 
 # =========================
-# WEBHOOK ENDPOINT
+# WEBHOOK
 # =========================
 @app.route("/paystack-webhook", methods=["POST"])
 def webhook():
 
-    # 🔐 verify Paystack signature
     if not verify_signature(request):
         abort(400)
 
@@ -95,21 +76,17 @@ def webhook():
         metadata = data.get("metadata", {})
 
         telegram_id = metadata.get("telegram_id")
-        plan = metadata.get("plan", "premium")
         reference = data.get("reference")
 
         if not telegram_id or not reference:
             return "missing data", 200
 
-        # 🎓 school rule
         if not is_school_active():
-            return "school break - no upgrade", 200
+            return "school break", 200
 
-        # 🔁 prevent duplicates
-        if is_already_premium(telegram_id):
+        if is_premium(telegram_id):
             return "already premium", 200
 
-        # 🔍 verify transaction with Paystack
         verify = requests.get(
             f"https://api.paystack.co/transaction/verify/{reference}",
             headers={"Authorization": f"Bearer {PAYSTACK_SECRET}"}
@@ -117,24 +94,18 @@ def webhook():
 
         if verify.get("data", {}).get("status") == "success":
 
-            # 💳 upgrade user
-            if plan == "premium":
-                update_user(telegram_id, plan="premium")
+            upgrade_user(telegram_id)
 
-                # 🔥 send Telegram message
-                send_telegram_message(
-                    telegram_id,
-                    "🔥 Payment confirmed. You're now Premium!"
-                )
+            send_telegram_message(
+                telegram_id,
+                "🔥 Payment confirmed. You're now Premium!"
+            )
 
             return "upgraded", 200
 
     return "ignored", 200
 
 
-# =========================
-# RUN SERVER (Render)
-# =========================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
