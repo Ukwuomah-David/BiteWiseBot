@@ -39,7 +39,7 @@ def create_payment_link(user_id):
     }
 
     try:
-        res = requests.post(url, json=data, headers=headers)
+        res = requests.post(url, json=data, headers=headers, timeout=10)
         return res.json()["data"]["authorization_url"]
     except:
         return PAYSTACK_LINK
@@ -77,21 +77,30 @@ async def safe_edit(query, text, reply_markup=None):
 # =========================
 # SMART ENGINE
 # =========================
-def smart_recommend(user_id):
+def smart_recommend(user_id, meal):
     user = safe_get_user(user_id)
     if not user:
         return []
 
     items = get_menu_items()
-    budget = int(user.get("budget", 1500))
+
+    total_budget = int(user.get("budget", 1500))
+    meals = parse_list(user.get("meals"))
+    meal_count = len(meals) if meals else 2
+
+    per_meal_budget = total_budget // meal_count
+
     allergies = parse_list(user.get("allergies"))
 
-    filtered = [i for i in items if i["price"] <= budget] or items
+    filtered = [i for i in items if i["price"] <= per_meal_budget]
 
-    def safe(item):
-        return not any(a in item["item_name"].lower() for a in allergies)
+    filtered = [
+        i for i in filtered
+        if not any(a in i["item_name"].lower() for a in allergies)
+    ]
 
-    filtered = [i for i in filtered if safe(i)] or items
+    if not filtered:
+        filtered = items
 
     if not is_premium_active(user_id):
         return random.sample(filtered, min(3, len(filtered)))
@@ -108,11 +117,16 @@ def build_meal_text(user_id, name):
     meals = parse_list(user.get("meals"))
     selected = meals if meals else ["breakfast", "lunch"]
 
+    total_budget = int(user.get("budget", 1500))
+    per_meal_budget = total_budget // len(selected)
+
     text = f"🍽✨ {name}'s Smart Meal Plan\n\n"
+    text += f"💰 Budget per meal: ₦{per_meal_budget}\n"
+
     total_cost = 0
 
     for meal in selected:
-        recs = smart_recommend(user_id)
+        recs = smart_recommend(user_id, meal)
 
         text += f"\n🍱 {meal.upper()} 🍱\n"
 
@@ -273,10 +287,12 @@ async def meal_done(update, context):
 
     text = build_meal_text(user_id, name)
 
+    buttons = [[InlineKeyboardButton("🔄 Reshuffle", callback_data="reshuffle")]]
+
     if is_premium_active(user_id):
-        buttons = [[InlineKeyboardButton("🔄 Reshuffle", callback_data="reshuffle")]]
+        buttons.append([InlineKeyboardButton("⭐ Rate Vendors", callback_data="rate")])
     else:
-        buttons = [[InlineKeyboardButton("💳 Upgrade to Premium", callback_data="upgrade")]]
+        buttons.append([InlineKeyboardButton("💳 Upgrade", callback_data="upgrade")])
 
     return await safe_edit(query, text, InlineKeyboardMarkup(buttons))
 
@@ -324,8 +340,7 @@ async def handle_prefix(update, context):
 
     if data.startswith("a_"):
         allergy = data.replace("a_", "")
-        user = safe_get_user(user_id)
-        allergies = parse_list(user.get("allergies"))
+        allergies = parse_list(safe_get_user(user_id).get("allergies"))
 
         if allergy in allergies:
             allergies.remove(allergy)
@@ -337,8 +352,7 @@ async def handle_prefix(update, context):
 
     if data.startswith("meal_"):
         meal = data.replace("meal_", "")
-        user = safe_get_user(user_id)
-        meals = parse_list(user.get("meals"))
+        meals = parse_list(safe_get_user(user_id).get("meals"))
 
         if meal in meals:
             meals.remove(meal)
