@@ -9,7 +9,8 @@ import random
 import requests
 from dotenv import load_dotenv
 import os
-
+from db import query
+import uuid
 load_dotenv(dotenv_path=".env")
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -21,6 +22,14 @@ PAYSTACK_LINK = "https://paystack.shop/pay/bitewise"
 # PAYMENT
 # =========================
 def create_payment_link(user_id):
+    reference = str(uuid.uuid4())
+
+    # 🔥 Save pending payment
+    query(
+        "INSERT INTO payments (reference, telegram_id, amount, status) VALUES (%s,%s,%s,%s)",
+        (reference, str(user_id), 100000, "pending")
+    )
+
     url = "https://api.paystack.co/transaction/initialize"
 
     headers = {
@@ -31,18 +40,14 @@ def create_payment_link(user_id):
     data = {
         "email": f"{user_id}@bitewise.bot",
         "amount": 100000,
+        "reference": reference,
         "metadata": {
-            "telegram_id": str(user_id),
-            "plan": "premium"
-        },
-        "callback_url": "https://bitewise-webhook.onrender.com/payment-success"
+            "telegram_id": str(user_id)
+        }
     }
 
-    try:
-        res = requests.post(url, json=data, headers=headers, timeout=10)
-        return res.json()["data"]["authorization_url"]
-    except:
-        return PAYSTACK_LINK
+    res = requests.post(url, json=data, headers=headers)
+    return res.json()["data"]["authorization_url"]
 
 
 # =========================
@@ -89,7 +94,6 @@ def smart_recommend(user_id, meal):
     meal_count = len(meals) if meals else 2
 
     per_meal_budget = total_budget // meal_count
-
     allergies = parse_list(user.get("allergies"))
 
     filtered = [i for i in items if i["price"] <= per_meal_budget]
@@ -135,7 +139,6 @@ def build_meal_text(user_id, name):
             total_cost += int(r["price"])
 
     text += f"\n💰 TOTAL ESTIMATED COST: ₦{total_cost}\n"
-
     return text
 
 
@@ -149,7 +152,7 @@ async def render_allergy_ui(query, user_id, name):
     def mark(x): return "✔" if x in allergies else "○"
 
     text = f"🤧 {name}, select your allergies:\n\n"
-    for a in ["nuts","dairy","spicy","gluten","seafood"]:
+    for a in ["nuts", "dairy", "spicy", "gluten", "seafood"]:
         text += f"{mark(a)} {a.title()}\n"
 
     return await safe_edit(
@@ -221,7 +224,7 @@ async def tithe_screen(update, context):
 
     return await safe_edit(
         query,
-        f"💰 {name}, do you commit to tithing 10% of your income?",
+        f"💰 {name}, do you commit to tithing 10%?",
         InlineKeyboardMarkup([
             [InlineKeyboardButton("I agree ✅", callback_data="tithe_yes"),
              InlineKeyboardButton("No ❌", callback_data="tithe_no")]
@@ -238,9 +241,7 @@ async def welcome_screen(update, context):
 
     return await safe_edit(
         query,
-        "🚀 Welcome to BiteWise!\n\n"
-        "I help you plan your meals 7 days a week 🍽\n"
-        "while keeping you within your budget 💰",
+        "🚀 Welcome to BiteWise!\n\nMeal planning + budget control 🍽💰",
         InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Proceed", callback_data="proceed")]])
     )
 
@@ -255,7 +256,7 @@ async def budget_screen(update, context):
 
     return await safe_edit(
         query,
-        f"💰 {name}, enter your daily budget (₦)\n\n📌 Minimum: ₦1500"
+        f"💰 {name}, enter your daily budget (₦)\nMinimum: ₦1500"
     )
 
 
@@ -265,7 +266,6 @@ async def allergy_intro(update, context):
     user_id = query.from_user.id
 
     save_state(user_id, state=STATE_ALLERGY)
-
     return await render_allergy_ui(query, user_id, query.from_user.first_name)
 
 
@@ -275,7 +275,6 @@ async def allergy_done(update, context):
     user_id = query.from_user.id
 
     save_state(user_id, state=STATE_MEAL)
-
     return await render_meal_ui(query, user_id, query.from_user.first_name)
 
 
@@ -287,7 +286,9 @@ async def meal_done(update, context):
 
     text = build_meal_text(user_id, name)
 
-    buttons = [[InlineKeyboardButton("🔄 Reshuffle", callback_data="reshuffle")]]
+    buttons = [
+        [InlineKeyboardButton("🔄 Reshuffle", callback_data="reshuffle")]
+    ]
 
     if is_premium_active(user_id):
         buttons.append([InlineKeyboardButton("⭐ Rate Vendors", callback_data="rate")])
@@ -306,7 +307,7 @@ async def upgrade(update, context):
 
     return await safe_edit(
         query,
-        "💳 Complete your payment below:",
+        "💳 Complete payment:",
         InlineKeyboardMarkup([[InlineKeyboardButton("Pay Now", url=link)]])
     )
 
@@ -315,17 +316,16 @@ async def upgrade(update, context):
 async def reshuffle(update, context):
     query = update.callback_query
     user_id = query.from_user.id
-    name = query.from_user.first_name
 
     if not is_premium_active(user_id):
-        return await query.answer("Upgrade to use reshuffle 🚫", show_alert=True)
+        return await query.answer("Upgrade required 🚫", show_alert=True)
 
-    text = build_meal_text(user_id, name)
+    text = build_meal_text(user_id, query.from_user.first_name)
 
     return await safe_edit(
         query,
         text,
-        InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Reshuffle Again", callback_data="reshuffle")]])
+        InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Again", callback_data="reshuffle")]])
     )
 
 
@@ -340,7 +340,8 @@ async def handle_prefix(update, context):
 
     if data.startswith("a_"):
         allergy = data.replace("a_", "")
-        allergies = parse_list(safe_get_user(user_id).get("allergies"))
+        user = safe_get_user(user_id)
+        allergies = parse_list(user.get("allergies"))
 
         if allergy in allergies:
             allergies.remove(allergy)
@@ -352,7 +353,8 @@ async def handle_prefix(update, context):
 
     if data.startswith("meal_"):
         meal = data.replace("meal_", "")
-        meals = parse_list(safe_get_user(user_id).get("meals"))
+        user = safe_get_user(user_id)
+        meals = parse_list(user.get("meals"))
 
         if meal in meals:
             meals.remove(meal)
@@ -386,9 +388,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = get_state(user_id)
 
     if state == STATE_BUDGET:
-
         if not text.isdigit():
-            return await update.message.reply_text("❌ Enter a valid number")
+            return await update.message.reply_text("❌ Invalid number")
 
         budget = int(text)
 
@@ -398,7 +399,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_state(user_id, budget=budget, state=STATE_ALLERGY)
 
         return await update.message.reply_text(
-            "✅ Budget set successfully! 💰✨\n\nNow continue 👇",
+            "✅ Budget saved!",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("Continue ➡️", callback_data="allergy_intro")]
             ])

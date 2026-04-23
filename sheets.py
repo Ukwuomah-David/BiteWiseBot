@@ -1,92 +1,58 @@
-from googleapiclient.discovery import build
-from google.oauth2 import service_account
-import os
-import json
-
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-SPREADSHEET_ID = "1NciP7t98chVepQf8BYxmlpbLc5HXUTFH7mpvL0t5Eac"
-
-service_json = os.getenv("SERVICE_ACCOUNT_JSON")
-
-if not service_json:
-    raise Exception("SERVICE_ACCOUNT_JSON is missing.")
-
-service_account_info = json.loads(service_json)
-
-creds = service_account.Credentials.from_service_account_info(
-    service_account_info,
-    scopes=SCOPES
-)
-
-service = build("sheets", "v4", credentials=creds)
-sheet = service.spreadsheets()
+from db import query
 
 
-def read_range(range_name):
-    return sheet.values().get(
-        spreadsheetId=SPREADSHEET_ID,
-        range=range_name
-    ).execute().get("values", [])
-
-
+# =========================
+# MENU ITEMS
+# =========================
 def get_menu_items():
-    data = read_range("MENU_ITEMS!A2:E")
-    items = []
+    rows = query("SELECT vendor_name, item_name, price FROM menu_items", fetch=True)
 
-    for row in data:
-        if len(row) < 5:
-            continue
-
-        try:
-            items.append({
-                "item_id": int(row[0]),
-                "vendor_id": int(row[1]),
-                "vendor_name": row[2],
-                "item_name": row[3],
-                "price": int(row[4])
-            })
-        except:
-            continue
-
-    return items
+    return [
+        {
+            "vendor_name": r[0],
+            "item_name": r[1],
+            "price": r[2]
+        }
+        for r in rows
+    ]
 
 
+# =========================
+# USERS
+# =========================
 def get_user(telegram_id):
-    data = read_range("USERS!A2:H")
+    rows = query(
+        "SELECT telegram_id, name, plan, budget, state, allergies, meals, premium_expiry FROM users WHERE telegram_id=%s",
+        (str(telegram_id),),
+        fetch=True
+    )
 
-    for row in data:
-        if str(row[0]) == str(telegram_id):
-            return {
-                "telegram_id": str(row[0]),
-                "name": row[1],
-                "plan": row[2],
-                "budget": int(row[3]) if row[3] else 0,
-                "state": row[4] if len(row) > 4 else "",
-                "allergies": row[5] if len(row) > 5 else "",
-                "meals": row[6] if len(row) > 6 else "",
-                "premium_expiry": row[7] if len(row) > 7 else ""
-            }
+    if not rows:
+        return None
 
-    return None
+    r = rows[0]
 
-
-def find_user_row(telegram_id):
-    data = read_range("USERS!A2:H")
-
-    for i, row in enumerate(data, start=2):
-        if str(row[0]) == str(telegram_id):
-            return i
-
-    return None
+    return {
+        "telegram_id": r[0],
+        "name": r[1],
+        "plan": r[2],
+        "budget": r[3],
+        "state": r[4],
+        "allergies": r[5] or "",
+        "meals": r[6] or "",
+        "premium_expiry": r[7]
+    }
 
 
 def save_user(telegram_id, name, plan="free", budget=0):
-    sheet.values().append(
-        spreadsheetId=SPREADSHEET_ID,
-        range="USERS!A:H",
-        valueInputOption="USER_ENTERED",
-        body={"values": [[telegram_id, name, plan, budget, "", "", "", ""]]}
-    ).execute()
+    query(
+        """
+        INSERT INTO users (telegram_id, name, plan, budget)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (telegram_id) DO NOTHING
+        """,
+        (str(telegram_id), name, plan, budget)
+    )
 
 
 def update_user(
@@ -99,31 +65,37 @@ def update_user(
     meals=None,
     premium_expiry=None
 ):
-    row = find_user_row(telegram_id)
-    if not row:
+    fields = []
+    values = []
+
+    def add(field, value):
+        fields.append(f"{field}=%s")
+        values.append(value)
+
+    if name is not None: add("name", name)
+    if plan is not None: add("plan", plan)
+    if budget is not None: add("budget", budget)
+    if state is not None: add("state", state)
+    if allergies is not None: add("allergies", allergies)
+    if meals is not None: add("meals", meals)
+    if premium_expiry is not None: add("premium_expiry", premium_expiry)
+
+    if not fields:
         return
 
-    def u(col, val):
-        sheet.values().update(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"USERS!{col}{row}",
-            valueInputOption="USER_ENTERED",
-            body={"values": [[val]]}
-        ).execute()
+    values.append(str(telegram_id))
 
-    if name is not None: u("B", name)
-    if plan is not None: u("C", plan)
-    if budget is not None: u("D", budget)
-    if state is not None: u("E", state)
-    if allergies is not None: u("F", allergies)
-    if meals is not None: u("G", meals)
-    if premium_expiry is not None: u("H", premium_expiry)
+    query(
+        f"UPDATE users SET {', '.join(fields)} WHERE telegram_id=%s",
+        values
+    )
 
 
-def save_vendor_rating(user_id, vendor_id, rating):
-    sheet.values().append(
-        spreadsheetId=SPREADSHEET_ID,
-        range="RATINGS!A:C",
-        valueInputOption="USER_ENTERED",
-        body={"values": [[str(user_id), str(vendor_id), int(rating)]]}
-    ).execute()
+# =========================
+# RATINGS
+# =========================
+def save_vendor_rating(user_id, vendor, rating):
+    query(
+        "INSERT INTO ratings (telegram_id, vendor_name, rating) VALUES (%s,%s,%s)",
+        (str(user_id), vendor, rating)
+    )
