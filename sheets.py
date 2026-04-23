@@ -15,7 +15,12 @@ import os
 import json
 from google.oauth2 import service_account
 
-service_account_info = json.loads(os.getenv("SERVICE_ACCOUNT_JSON"))
+service_json = os.getenv("SERVICE_ACCOUNT_JSON")
+
+if not service_json:
+    raise Exception("SERVICE_ACCOUNT_JSON is missing. Check your .env or environment variables.")
+
+service_account_info = json.loads(service_json)
 
 creds = service_account.Credentials.from_service_account_info(
     service_account_info,

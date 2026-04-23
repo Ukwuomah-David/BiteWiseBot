@@ -16,10 +16,12 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 # =========================
 # SUCCESS PAGE
 # =========================
-@app.route("/payment-success", methods=["GET"])
+@app.route("/payment-success")
 def payment_success():
-    return "<h1>✅ Payment Successful. Return to Telegram.</h1>"
-
+    return """
+    <h1>✅ Payment Successful</h1>
+    <p>You can return to Telegram.</p>
+    """
 
 # =========================
 # VERIFY SIGNATURE
