@@ -1,13 +1,27 @@
 import psycopg2
+from psycopg2.pool import SimpleConnectionPool
 import os
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-conn = psycopg2.connect(DATABASE_URL)
-conn.autocommit = True
+pool = SimpleConnectionPool(
+    1, 20,  # min, max connections
+    DATABASE_URL
+)
 
 def query(sql, params=None, fetch=False):
-    with conn.cursor() as cur:
+    conn = pool.getconn()
+    try:
+        cur = conn.cursor()
         cur.execute(sql, params or ())
+
         if fetch:
-            return cur.fetchall()
+            result = cur.fetchall()
+        else:
+            result = None
+
+        conn.commit()
+        cur.close()
+        return result
+    finally:
+        pool.putconn(conn)

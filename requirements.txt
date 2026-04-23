@@ -1,8 +1,6 @@
 python-telegram-bot==20.7
-google-api-python-client
-google-auth
-google-auth-oauthlib
 requests
 python-dotenv
 flask
-requests
+psycopg2-binary
+gunicorn

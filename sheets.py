@@ -99,3 +99,12 @@ def save_vendor_rating(user_id, vendor, rating):
         "INSERT INTO ratings (telegram_id, vendor_name, rating) VALUES (%s,%s,%s)",
         (str(user_id), vendor, rating)
     )
+
+def get_vendor_scores():
+    rows = query("""
+        SELECT vendor_name, AVG(rating) as avg_rating
+        FROM ratings
+        GROUP BY vendor_name
+    """, fetch=True)
+
+    return {r[0]: float(r[1]) for r in rows}

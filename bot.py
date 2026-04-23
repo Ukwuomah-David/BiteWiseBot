@@ -109,7 +109,17 @@ def smart_recommend(user_id, meal):
     if not is_premium_active(user_id):
         return random.sample(filtered, min(3, len(filtered)))
 
-    return sorted(filtered, key=lambda x: x["price"])[:5]
+    scores = get_vendor_scores()
+
+    def score(item):
+        price_score = -item["price"]
+
+        rating_score = scores.get(item["vendor_name"], 3)
+
+    # 🔥 FAVOR CHEAP + HIGHLY RATED
+        return (rating_score * 15) + price_score
+
+    return sorted(filtered, key=score, reverse=True)[:5]
 
 
 # =========================
@@ -291,7 +301,28 @@ async def meal_done(update, context):
     ]
 
     if is_premium_active(user_id):
-        buttons.append([InlineKeyboardButton("⭐ Rate Vendors", callback_data="rate")])
+        @route("rate")
+        async def rate_menu(update, context):
+            query = update.callback_query
+            user_id = query.from_user.id
+
+            items = get_menu_items()[:5]  # simple sample
+
+            buttons = []
+
+            for i in items:
+                buttons.append([
+                    InlineKeyboardButton(
+                        f"{i['vendor_name']} ⭐",
+                        callback_data=f"rate_{i['vendor_name']}"
+                    )
+                ])
+
+            return await safe_edit(
+                query,
+                "⭐ Rate a vendor:",
+                InlineKeyboardMarkup(buttons)
+            )
     else:
         buttons.append([InlineKeyboardButton("💳 Upgrade", callback_data="upgrade")])
 
@@ -363,7 +394,27 @@ async def handle_prefix(update, context):
 
         save_list(user_id, "meals", meals)
         return await render_meal_ui(query, user_id, name)
+    
+    if data.startswith("rate_"):
+        vendor = data.replace("rate_", "")
 
+        buttons = [
+            [InlineKeyboardButton("⭐ 1", callback_data=f"star_{vendor}_1"),
+            InlineKeyboardButton("⭐ 2", callback_data=f"star_{vendor}_2")],
+            [InlineKeyboardButton("⭐ 3", callback_data=f"star_{vendor}_3"),
+            InlineKeyboardButton("⭐ 4", callback_data=f"star_{vendor}_4")],
+            [InlineKeyboardButton("⭐ 5", callback_data=f"star_{vendor}_5")]
+        ]
+
+        return await safe_edit(query, f"Rate {vendor}", InlineKeyboardMarkup(buttons))
+
+
+    if data.startswith("star_"):
+        _, vendor, rating = data.split("_")
+
+        rate_vendor(user_id, vendor, int(rating))
+
+        return await query.answer("✅ Rating saved!", show_alert=True)
 
 # =========================
 # HANDLERS
@@ -417,7 +468,11 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("Bot running...")
-    app.run_polling()
+    app.run_webhook(
+    listen="0.0.0.0",
+    port=int(os.environ.get("PORT", 10000)),
+    webhook_url=os.getenv("WEBHOOK_URL")
+)
 
 
 if __name__ == "__main__":
