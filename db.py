@@ -1,19 +1,18 @@
 import psycopg2
-from psycopg2.pool import SimpleConnectionPool
+from psycopg2 import pool
 import os
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-pool = SimpleConnectionPool(
-    1, 20,  # min, max connections
-    DATABASE_URL
+connection_pool = psycopg2.pool.SimpleConnectionPool(
+    1, 20, DATABASE_URL
 )
 
 def query(sql, params=None, fetch=False):
-    conn = pool.getconn()
+    conn = connection_pool.getconn()
     try:
         cur = conn.cursor()
-        cur.execute(sql, params or ())
+        cur.execute(sql, params)
 
         if fetch:
             result = cur.fetchall()
@@ -23,5 +22,6 @@ def query(sql, params=None, fetch=False):
         conn.commit()
         cur.close()
         return result
+
     finally:
-        pool.putconn(conn)
+        connection_pool.putconn(conn)

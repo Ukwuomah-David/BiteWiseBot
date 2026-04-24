@@ -1,6 +1,6 @@
 from sheets import get_user, save_user, update_user, save_vendor_rating
 from datetime import datetime, timedelta
-
+from db import query
 
 # =========================
 # CORE

@@ -5,13 +5,22 @@ from db import query
 # MENU ITEMS
 # =========================
 def get_menu_items():
-    rows = query("SELECT vendor_name, item_name, price FROM menu_items", fetch=True)
+    rows = query("""
+        SELECT 
+            m.item_id,
+            v.vendor_name,
+            m.item_name,
+            m.price
+        FROM menu_items m
+        JOIN vendors v ON m.vendor_id = v.vendor_id
+    """, fetch=True)
 
     return [
         {
-            "vendor_name": r[0],
-            "item_name": r[1],
-            "price": r[2]
+            "item_id": r[0],
+            "vendor_name": r[1],
+            "item_name": r[2],
+            "price": r[3]
         }
         for r in rows
     ]
@@ -102,9 +111,20 @@ def save_vendor_rating(user_id, vendor, rating):
 
 def get_vendor_scores():
     rows = query("""
-        SELECT vendor_name, AVG(rating) as avg_rating
+        SELECT vendor_name, AVG(rating)
         FROM ratings
         GROUP BY vendor_name
     """, fetch=True)
 
-    return {r[0]: float(r[1]) for r in rows}
+    return {r[0]: float(r[1]) for r in rows} if rows else {}
+
+    
+def get_user_vendor_scores(user_id):
+    rows = query("""
+        SELECT vendor_name, AVG(rating)
+        FROM ratings
+        WHERE telegram_id=%s
+        GROUP BY vendor_name
+    """, (str(user_id),), fetch=True)
+
+    return {r[0]: float(r[1]) for r in rows} if rows else {}
