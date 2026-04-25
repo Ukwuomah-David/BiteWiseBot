@@ -1,27 +1,49 @@
+# =========================
+# FIXED BOT.PY (STABLE BUILD)
+# =========================
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from telegram.error import BadRequest
-
+from datetime import datetime, timedelta
 from sheets import get_menu_items, get_vendor_scores, get_user_vendor_scores
 from user_service import *
 import logging
-logging.basicConfig(level=logging.INFO)
 import random
 import requests
 from dotenv import load_dotenv
 import os
 from db import query
 import uuid
+import time
+
+logging.basicConfig(level=logging.INFO)
+
 if not callable(query):
     raise Exception("DB query function not loaded properly")
-load_dotenv(dotenv_path=".env")
+
+load_dotenv(".env")
 
 TOKEN = os.getenv("BOT_TOKEN")
 PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
 PAYSTACK_LINK = "https://paystack.shop/pay/bitewise"
 
+if not TOKEN:
+    raise Exception("BOT_TOKEN missing")
 
+if not PAYSTACK_SECRET:
+    raise Exception("PAYSTACK_SECRET missing")
+# =========================
+# SIMPLE CACHE (IN-MEMORY)
+# =========================
+MEAL_CACHE = {}
+CACHE_TTL = 15  # seconds
+VENDOR_RANK_CACHE = {
+    "data": {},
+    "last_updated": 0
+}
+
+RANK_TTL = 300  # 5 minutes
 # =========================
 # PAYMENT
 # =========================
@@ -33,24 +55,49 @@ def create_payment_link(user_id):
         (reference, str(user_id), 100000, "pending")
     )
 
-    url = "https://api.paystack.co/transaction/initialize"
+    res = requests.post(
+        "https://api.paystack.co/transaction/initialize",
+        json={
+            "email": f"{user_id}@bitewise.bot",
+            "amount": 100000,
+            "reference": reference,
+            "metadata": {"telegram_id": str(user_id)}
+        },
+        headers={
+            "Authorization": f"Bearer {PAYSTACK_SECRET}",
+            "Content-Type": "application/json"
+        },
+        timeout= 10
+    )
 
-    headers = {
-        "Authorization": f"Bearer {PAYSTACK_SECRET}",
-        "Content-Type": "application/json"
-    }
+    res_json = res.json()
 
-    data = {
-        "email": f"{user_id}@bitewise.bot",
-        "amount": 100000,
-        "reference": reference,
-        "metadata": {
-            "telegram_id": str(user_id)
-        }
-    }
+    if not res_json.get("status"):
+        logging.error(f"Paystack error: {res_json}")
+        return None
 
-    res = requests.post(url, json=data, headers=headers)
-    return res.json()["data"]["authorization_url"]
+    return res_json["data"]["authorization_url"]
+
+
+# ✅ NEW: SUBSCRIPTION EXTENSION
+def extend_subscription(user_id, days=30):
+    user = safe_get_user(user_id)
+
+    current = user.get("subscription_expires_at")
+
+    if current:
+        expiry = datetime.fromisoformat(str(current))
+        if expiry > datetime.utcnow():
+            expiry += timedelta(days=days)
+        else:
+            expiry = datetime.utcnow() + timedelta(days=days)
+    else:
+        expiry = datetime.utcnow() + timedelta(days=days)
+
+    query(
+        "UPDATE users SET plan='premium', subscription_expires_at=%s WHERE telegram_id=%s",
+        (expiry.isoformat(), str(user_id))
+    )
 
 
 # =========================
@@ -61,16 +108,15 @@ STATE_WELCOME = "welcome"
 STATE_BUDGET = "budget"
 STATE_ALLERGY = "allergy"
 STATE_MEAL = "meal"
-
+# =========================
+# ROUTING
+# =========================
 ROUTES = {}
-
-
 def route(key):
     def wrapper(func):
         ROUTES[key] = func
         return func
     return wrapper
-
 
 # =========================
 # SAFE EDIT
@@ -79,25 +125,30 @@ async def safe_edit(callback_query, text, reply_markup=None):
     try:
         return await callback_query.edit_message_text(text, reply_markup=reply_markup)
     except BadRequest:
-        return
+        try:
+            await callback_query.message.reply_text(text, reply_markup=reply_markup)
+        except:
+            pass
 
 
-# =========================
-# SMART ENGINE HELPERS (FIXED)
-# =========================
 # =========================
 # PREFIX HANDLER (MISSING FIX)
 # =========================
-async def handle_prefix(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# PREFIX HANDLER
+# =========================
+async def handle_prefix(update, context):
     cq = update.callback_query
-    data = query.data
-    user_id = query.from_user.id
-    name = query.from_user.first_name
+    query = cq
+    user_id = cq.from_user.id
+    name = cq.from_user.first_name
+    data = cq.data
 
     if data.startswith("a_"):
         allergy = data.replace("a_", "")
         user = safe_get_user(user_id)
-        allergies = parse_list(user.get("allergies"))
+        allergies = parse_list(user.get("allergies") or "")
+        meals = parse_list(user.get("meals") or "")
 
         if allergy in allergies:
             allergies.remove(allergy)
@@ -119,6 +170,11 @@ async def handle_prefix(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         save_list(user_id, "meals", meals)
         return await render_meal_ui(query, user_id, name)
+    
+
+# =========================
+# ONBOARDING CHECK
+# =========================
 
 def get_seen_vendors(context):
     if context and context.user_data.get("seen_vendors"):
@@ -137,8 +193,51 @@ def update_seen_vendors(context, vendors):
             used.append(v)
 
     context.user_data["seen_vendors"] = used[-8:]
+def get_cache_key(user_id):
+    return f"meal:{user_id}"
 
 
+def get_cached_meal(user_id):
+    key = get_cache_key(user_id)
+
+    if key not in MEAL_CACHE:
+        return None
+
+    data, timestamp = MEAL_CACHE[key]
+
+    # check expiry
+    if time.time() - timestamp > CACHE_TTL:
+        del MEAL_CACHE[key]
+        return None
+
+    return data
+
+
+def set_cached_meal(user_id, value):
+    key = get_cache_key(user_id)
+    MEAL_CACHE[key] = (value, time.time())
+def compute_vendor_ranks():
+    """
+    Precompute global vendor scores once every 5 minutes
+    instead of querying DB per user request
+    """
+
+    global VENDOR_RANK_CACHE
+
+    rows = get_vendor_scores()  # already SQL aggregated
+
+    VENDOR_RANK_CACHE["data"] = rows
+    VENDOR_RANK_CACHE["last_updated"] = time.time()
+
+    return rows
+def get_cached_vendor_scores():
+    if (
+        time.time() - VENDOR_RANK_CACHE["last_updated"]
+        > RANK_TTL
+    ):
+        compute_vendor_ranks()
+
+    return VENDOR_RANK_CACHE["data"]
 # =========================
 # SMART ENGINE (FIXED + SAFE)
 # =========================
@@ -154,7 +253,8 @@ def smart_recommend(user_id, meal, context=None):
     meal_count = len(meals) if meals else 2
 
     per_meal_budget = total_budget // meal_count
-    allergies = parse_list(user.get("allergies"))
+    allergies = parse_list(user.get("allergies") or "")
+    meals = parse_list(user.get("meals") or "")
 
     # FILTER
     filtered = [i for i in items if i["price"] <= per_meal_budget]
@@ -167,16 +267,17 @@ def smart_recommend(user_id, meal, context=None):
     if not filtered:
         filtered = items
 
+ 
     # =========================
     # FREE USERS
     # =========================
-    if not is_premium_active(user_id):
+    if not subscription_middleware(user_id):
         return random.sample(filtered, min(3, len(filtered)))
-
+    
     # =========================
     # PREMIUM AI ENGINE (FIXED)
     # =========================
-    global_scores = get_vendor_scores() or {}
+    global_scores = get_cached_vendor_scores() or {}
     user_scores = get_user_vendor_scores(user_id) or {}
 
     seen_vendors = get_seen_vendors(context)
@@ -210,11 +311,61 @@ def smart_recommend(user_id, meal, context=None):
 
     return ranked[:5]
 
+def get_today_meal(user_id):
+    today = datetime.utcnow().date()
+
+    rows = query(
+        "SELECT message FROM daily_meals WHERE telegram_id=%s AND date=%s",
+        (str(user_id), today),
+        fetch=True
+    )
+
+    return rows[0][0] if rows else None
+def subscription_middleware(user_id):
+    user = safe_get_user(user_id)
+
+    if not user:
+        return False
+
+    expiry = user.get("subscription_expires_at")
+
+    if not expiry:
+        return False
+
+    expiry_date = datetime.fromisoformat(str(expiry))
+
+    if datetime.utcnow() > expiry_date:
+        # auto downgrade user
+        query(
+            "UPDATE users SET plan='free' WHERE telegram_id=%s",
+            (str(user_id),)
+        )
+        return False
+
+    return True
+def is_onboarding_complete(user_id):
+    user = safe_get_user(user_id)
+
+    if not user:
+        return False
+
+    return (
+        user.get("budget") is not None and
+        user.get("meals") is not None and
+        user.get("allergies") is not None
+    )
 
 # =========================
 # MEAL BUILDER
 # =========================
-def build_meal_text(user_id, name, context=None):
+def build_meal_text(user_id, name, context=None, force_refresh=False):
+    # =========================
+    # CACHE CHECK
+    # =========================
+    if not force_refresh:
+        cached = get_cached_meal(user_id)
+        if cached:
+            return cached
     user = safe_get_user(user_id)
 
     meals = parse_list(user.get("meals"))
@@ -238,6 +389,12 @@ def build_meal_text(user_id, name, context=None):
             total_cost += int(r["price"])
 
     text += f"\n💰 TOTAL ESTIMATED COST: ₦{total_cost}\n"
+
+    # =========================
+    # SAVE CACHE
+    # =========================
+    set_cached_meal(user_id, text)
+
     return text
 
 
@@ -246,7 +403,8 @@ def build_meal_text(user_id, name, context=None):
 # =========================
 async def render_allergy_ui(query, user_id, name):
     user = safe_get_user(user_id)
-    allergies = parse_list(user.get("allergies"))
+    allergies = parse_list(user.get("allergies") or "")
+    meals = parse_list(user.get("meals") or "")
 
     def mark(x): return "✔" if x in allergies else "○"
 
@@ -300,7 +458,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     get_or_create_user(user_id, name)
     save_state(user_id, state=STATE_TITHE)
+    user_id = update.message.from_user.id
 
+    msg = get_today_meal(user_id)
+
+    if msg:
+        await update.message.reply_text(msg)
+        return
     await update.message.reply_text(
         f"👋 {name}, ready to build financial discipline?",
         reply_markup=InlineKeyboardMarkup([
@@ -315,9 +479,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================
 @route("ready_yes")
 async def tithe_screen(update, context):
+    data = update.callback_query.data
     cq = update.callback_query
-    user_id = query.from_user.id
-    name = query.from_user.first_name
+    query = cq
+    user_id = cq.from_user.id
+    name = cq.from_user.first_name
 
     save_state(user_id, state=STATE_TITHE)
 
@@ -333,9 +499,11 @@ async def tithe_screen(update, context):
 
 @route("tithe_yes")
 async def welcome_screen(update, context):
+    data = update.callback_query.data
     cq = update.callback_query
-    user_id = query.from_user.id
-
+    query = cq
+    user_id = cq.from_user.id
+    name = cq.from_user.first_name
     save_state(user_id, state=STATE_WELCOME)
 
     return await safe_edit(
@@ -347,9 +515,11 @@ async def welcome_screen(update, context):
 
 @route("proceed")
 async def budget_screen(update, context):
+    data = update.callback_query.data
     cq = update.callback_query
-    user_id = query.from_user.id
-    name = query.from_user.first_name
+    query = cq
+    user_id = cq.from_user.id
+    name = cq.from_user.first_name
 
     save_state(user_id, state=STATE_BUDGET)
 
@@ -363,16 +533,18 @@ async def budget_screen(update, context):
 async def allergy_intro(update, context):
     cq = update.callback_query
     user_id = query.from_user.id
-
+    name = cq.from_user.first_name
     save_state(user_id, state=STATE_ALLERGY)
     return await render_allergy_ui(query, user_id, query.from_user.first_name)
 
 
 @route("allergy_done")
 async def allergy_done(update, context):
+    data = update.callback_query.data
     cq = update.callback_query
-    user_id = query.from_user.id
-
+    query = cq
+    user_id = cq.from_user.id
+    name = cq.from_user.first_name
     save_state(user_id, state=STATE_MEAL)
     return await render_meal_ui(query, user_id, query.from_user.first_name)
 
@@ -380,71 +552,180 @@ async def allergy_done(update, context):
 @route("meal_done")
 async def meal_done(update, context):
     cq = update.callback_query
-    user_id = query.from_user.id
-    name = query.from_user.first_name
+    query = cq
+    user_id = cq.from_user.id
+    data = update.callback_query.data
+    name = cq.from_user.first_name
 
     text = build_meal_text(user_id, name, context)
 
     buttons = [[InlineKeyboardButton("🔄 Reshuffle", callback_data="reshuffle")]]
 
-    if not is_premium_active(user_id):
+    if not subscription_middleware(user_id):
         buttons.append([InlineKeyboardButton("💳 Upgrade", callback_data="upgrade")])
 
-    return await safe_edit(query, text, InlineKeyboardMarkup(buttons))
+    # 🔥 IMPORTANT: attach menu AFTER onboarding completes
+    # send menu separately
+    await context.bot.send_message(
+        chat_id=user_id,
+        text="📋 Menu unlocked. Use it below 👇",
+        reply_markup=get_main_menu()
+    )
 
-
-@route("upgrade")
-async def upgrade(update, context):
-    cq = update.callback_query
-    user_id = query.from_user.id
-
-    link = create_payment_link(user_id)
-
+    # THEN edit original message
     return await safe_edit(
         query,
-        "💳 Complete payment:",
-        InlineKeyboardMarkup([[InlineKeyboardButton("Pay Now", url=link)]])
+        text,
+        InlineKeyboardMarkup(buttons)
     )
+
+
 
 
 @route("reshuffle")
 async def reshuffle(update, context):
+    data = update.callback_query.data
     cq = update.callback_query
-    user_id = query.from_user.id
-
-    if not is_premium_active(user_id):
+    query = cq
+    user_id = cq.from_user.id
+    name = cq.from_user.first_name
+    if not subscription_middleware(user_id):
         return await query.answer("Upgrade required 🚫", show_alert=True)
 
-    text = build_meal_text(user_id, query.from_user.first_name, context)
+    text = build_meal_text(
+    user_id,
+    query.from_user.first_name,
+    context,
+    force_refresh=True  # 🔥 bypass cache
+)
 
     return await safe_edit(
         query,
         text,
-        InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Again", callback_data="reshuffle")]])
+        InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Reshuffle", callback_data="reshuffle")]])
+    )
+def get_main_menu():
+    return ReplyKeyboardMarkup(
+        [
+            ["🍽 My Meals", "💰 Budget"],
+            ["🤧 Allergies", "💳 Subscription"],
+            ["🍳 Meal Times", "📞 Support"],
+            ["🔄 Refresh Meal Plan"]
+        ],
+        resize_keyboard=True
+    )
+async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    name = update.message.from_user.first_name
+
+    if not is_onboarding_complete(user_id):
+        return await update.message.reply_text("⚠️ Complete onboarding first.")
+
+    await update.message.reply_text(
+        f"📋 Main Menu\nWelcome {name}",
+        reply_markup=get_main_menu()
     )
 
+    
 
+# =========================
+# MENU ROUTER
+# =========================
+
+MENU_ROUTES = {}
+def menu_route(key):
+    def wrapper(func):
+        MENU_ROUTES[key] = func
+        return func
+    return wrapper
 # =========================
 # HANDLERS (UNCHANGED)
 # =========================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cq = update.callback_query
+    query = update.callback_query
     await query.answer()
 
     data = query.data
+    user_id = query.from_user.id
 
+    # =========================
+    # ROUTE FLOW SYSTEM
+    # =========================
     if data in ROUTES:
         return await ROUTES[data](update, context)
 
+    # =========================
+    # MENU SYSTEM (NEW)
+    # =========================
+    if data in MENU_ROUTES:
+        return await MENU_ROUTES[data](update, context)
+
+    # fallback handlers
     if data.startswith("a_") or data.startswith("meal_"):
         return await handle_prefix(update, context)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
+    
     text = update.message.text.strip()
+    user_id = update.message.from_user.id
 
+    # =========================
+    # MENU ROUTING (TEXT BUTTONS)
+    # =========================
+    if text == "📞 Support":
+        return await update.message.reply_text(
+            "📩 Support:\nEmail: support@bitewise.com\nPhone: +234-XXX-XXX"
+        )
+
+    if text == "🍳 Meal Times":
+        user = safe_get_user(user_id)
+        meals = parse_list(user.get("meals"))
+
+        return await update.message.reply_text(
+            f"🍽 Current Meal Times:\n{meals}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Toggle Breakfast", callback_data="meal_breakfast")],
+                [InlineKeyboardButton("Toggle Lunch", callback_data="meal_lunch")],
+                [InlineKeyboardButton("Toggle Dinner", callback_data="meal_dinner")]
+            ])
+        )
+
+    if text == "💳 Subscription":
+        active = subscription_middleware(user_id)
+
+        status = "✅ Active" if active else "❌ Expired"
+
+        return await update.message.reply_text(
+            f"💳 Subscription Status:\n{status}"
+        )
+    if text == "🍽 My Meals":
+        name = update.message.from_user.first_name
+        text_out = build_meal_text(user_id, name, context)
+
+        return await update.message.reply_text(text_out)
+
+    if text == "💰 Budget":
+        save_state(user_id, state=STATE_BUDGET)
+        return await update.message.reply_text("💰 Enter new budget:")
+
+    if text == "🤧 Allergies":
+        return await render_allergy_ui(
+            update, user_id, update.message.from_user.first_name
+        )
+
+    if text == "🔄 Refresh Meal Plan":
+        name = update.message.from_user.first_name
+
+        text_out = build_meal_text(
+            user_id,
+            name,
+            context,
+            force_refresh=True
+        )
+
+        return await update.message.reply_text(text_out)
     state = get_state(user_id)
 
     if state == STATE_BUDGET:
@@ -464,7 +745,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("Continue ➡️", callback_data="allergy_intro")]
             ])
         )
-
+        
 
 # =========================
 # MAIN (WEBHOOK MODE FIXED)
@@ -473,16 +754,13 @@ def main():
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
+    
     print("Bot running (WEBHOOK MODE)...")
 
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=os.getenv("WEBHOOK_URL")
-    )
+    app.run_polling()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,44 @@
 from sheets import get_user, save_user, update_user, save_vendor_rating
 from datetime import datetime, timedelta
 from db import query
+from cache import clear_cache
+from datetime import datetime
+from bot import smart_recommend  # reuse your engine
+from tips import get_daily_tip
+
+
+def build_daily_meal_message(user_id):
+    user = get_user(user_id)
+    if not user:
+        return None
+
+    name = user["name"]
+
+    today = datetime.now().strftime("%A, %d %B %Y")
+
+    meals = ["breakfast", "lunch", "dinner"]
+
+    text = f"☀️ Good morning {name}!\n"
+    text += f"📅 {today}\n\n"
+    text += "🍽 Your BiteWise meal plan for today:\n\n"
+
+    total = 0
+
+    for meal in meals:
+        recs = smart_recommend(user_id, meal)
+
+        text += f"🍱 {meal.upper()}\n"
+
+        for r in recs:
+            text += f"- {r['vendor_name']} • {r['item_name']} (₦{r['price']})\n"
+            total += int(r["price"])
+
+        text += "\n"
+
+    text += f"💰 Estimated total: ₦{total}\n\n"
+    text += f"💡 Tip: {get_daily_tip()}"
+
+    return text
 
 # =========================
 # CORE
@@ -63,7 +101,11 @@ def is_premium_active(user_id):
         return False
 
     try:
-        return datetime.utcnow() < datetime.fromisoformat(expiry)
+        expiry_date = datetime.fromisoformat(expiry)
+
+        # 3 day grace period
+        return datetime.utcnow() < expiry_date + timedelta(days=3)
+
     except:
         return False
 
@@ -89,9 +131,19 @@ def can_rate(user_id):
     return is_premium_active(user_id)
 
 
+
+
 def rate_vendor(user_id, vendor, rating):
     if not can_rate(user_id):
         return False
+
+    save_vendor_rating(user_id, vendor, rating)
+
+    # 🔥 CLEAR USER CACHE
+    clear_cache(f"user_scores:{user_id}")
+    clear_cache("vendor_scores")
+
+    return True
 
     save_vendor_rating(user_id, vendor, rating)
     return True

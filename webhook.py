@@ -4,181 +4,223 @@ import hmac
 import hashlib
 import requests
 import logging
-from datetime import datetime
 
 from db import query
-from user_service import upgrade_user
+from redis_queue import push_payment_job
 
-app = Flask(__name__)
+app = Flask(**name**)
 
 PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-
-
-# =========================
-# LOGGING (IMPORTANT FOR PROD)
-# =========================
 logging.basicConfig(level=logging.INFO)
 
+# =========================
+
+# TELEGRAM SENDER
 
 # =========================
-# VERIFY PAYSTACK SIGNATURE
-# =========================
-def verify_signature(req):
-    signature = req.headers.get("x-paystack-signature")
 
-    if not signature:
-        return False
+def send_telegram_message(user_id, text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-    computed = hmac.new(
-        PAYSTACK_SECRET.encode(),
-        req.data,
-        hashlib.sha512
-    ).hexdigest()
-
-    return hmac.compare_digest(signature, computed)
-
-
-# =========================
-# TELEGRAM SENDER (SAFE)
-# =========================
-def send_message(chat_id, text):
+    ```
     try:
-        requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={"chat_id": chat_id, "text": text},
-            timeout=5
+        res = requests.post(
+            url,
+            json={
+                "chat_id": user_id,
+                "text": text,
+                "reply_markup": {
+                    "inline_keyboard": [
+                        [
+                            {"text": "🍽 View My Meals", "callback_data": "reshuffle"}
+                        ]
+                    ]
+                }
+            },
+            timeout=10
         )
+
+        if res.status_code != 200:
+            logging.error(f"Telegram API error: {res.text}")
+
     except Exception as e:
-        logging.error(f"Telegram send failed: {e}")
-
+        logging.error(f"Telegram send error: {e}")
+    ```
 
 # =========================
-# ATOMIC PAYMENT LOCK
+
+# VERIFY PAYSTACK SIGNATURE
+
 # =========================
-def lock_payment(reference):
-    return query(
-        """
-        UPDATE payments
-        SET status = 'processing'
-        WHERE reference = %s
-          AND status = 'pending'
-        RETURNING telegram_id
-        """,
+
+def verify_signature(req):
+signature = req.headers.get("x-paystack-signature")
+
+```
+if not signature or not PAYSTACK_SECRET:
+    return False
+
+computed = hmac.new(
+    PAYSTACK_SECRET.encode(),
+    req.data,
+    hashlib.sha512
+).hexdigest()
+
+return hmac.compare_digest(signature, computed)
+```
+
+# =========================
+
+# OPTIONAL: VERIFY WITH PAYSTACK API (EXTRA SECURITY)
+
+# =========================
+
+def verify_transaction(reference):
+try:
+res = requests.get(
+f"https://api.paystack.co/transaction/verify/{reference}",
+headers={"Authorization": f"Bearer {PAYSTACK_SECRET}"},
+timeout=10
+)
+return res.json()
+except Exception as e:
+logging.error(f"Verify API error: {e}")
+return None
+
+# =========================
+
+# WEBHOOK ENDPOINT
+
+# =========================
+
+@app.route("/paystack-webhook", methods=["POST"])
+def webhook():
+try:
+# 🔒 Signature check
+if not verify_signature(request):
+logging.warning("Invalid signature")
+return "invalid signature", 400
+
+```
+    event = request.json or {}
+
+    # Only process successful payments
+    if event.get("event") != "charge.success":
+        return "ignored", 200
+
+    data = event.get("data", {})
+    reference = data.get("reference")
+
+    if not reference:
+        return "missing reference", 200
+
+    # =========================
+    # VERIFY WITH PAYSTACK (ANTI-FRAUD)
+    # =========================
+    verify = verify_transaction(reference)
+
+    if not verify or not verify.get("status"):
+        logging.warning(f"Verification failed for {reference}")
+        return "verification failed", 400
+
+    payment_data = verify.get("data", {})
+
+    if payment_data.get("status") != "success":
+        return "not successful", 200
+
+    # =========================
+    # DB LOOKUP
+    # =========================
+    rows = query(
+        "SELECT telegram_id, status FROM payments WHERE reference=%s",
         (reference,),
         fetch=True
     )
 
+    if not rows:
+        return "unknown reference", 200
 
+    telegram_id, status = rows[0]
+
+    # =========================
+    # IDEMPOTENCY (PREVENT DOUBLE CREDIT)
+    # =========================
+    if status == "success":
+        logging.info(f"Duplicate webhook ignored: {reference}")
+        return "already processed", 200
+
+    # =========================
+    # UPDATE PAYMENT STATUS
+    # =========================
+    query(
+        "UPDATE payments SET status='success' WHERE reference=%s",
+        (reference,)
+    )
+
+    # =========================
+    # QUEUE BACKGROUND JOB
+    # =========================
+        # =========================
+    # MARK AS SUCCESS (FAST PATH)
+    # =========================
+    query(
+        """
+        UPDATE payments
+        SET status='success', updated_at=NOW()
+        WHERE reference=%s
+        """,
+        (reference,)
+    )
+
+    # =========================
+    # ACTIVATE USER
+    # =========================
+    from user_service import upgrade_user
+    upgrade_user(telegram_id)
+
+    # =========================
+    # SEND TELEGRAM MESSAGE INSTANTLY
+    # =========================
+    send_telegram_message(
+        telegram_id,
+        "🎉 Payment successful!\n\n🔥 Your Premium access is now active."
+    )
+
+    # =========================
+    # OPTIONAL: still push to worker (backup/logging)
+    # =========================
+    push_payment_job(reference, telegram_id)
+
+    return "success", 200
+
+except Exception as e:
+    logging.error(f"Webhook error: {e}")
+    return "internal error", 200
+```
 
 # =========================
-# WEBHOOK
-# =========================
-@app.route("/paystack-webhook", methods=["POST"])
-def webhook():
-    try:
-        # =========================
-        # SECURITY CHECK
-        # =========================
-        if not verify_signature(request):
-            logging.warning("Invalid Paystack signature")
-            return "invalid signature", 400
 
-        event = request.json or {}
-
-        if event.get("event") != "charge.success":
-            return "ignored", 200
-
-        data = event.get("data", {})
-        reference = data.get("reference")
-
-        if not reference:
-            return "missing reference", 200
-
-        # =========================
-        # STEP 1: LOCK PAYMENT (CRITICAL)
-        # =========================
-        locked = lock_payment(reference)
-
-        if not locked:
-            logging.info(f"Duplicate or invalid webhook: {reference}")
-            return "ignored", 200
-
-        telegram_id = locked[0][0]
-
-        # =========================
-        # STEP 2: VERIFY WITH PAYSTACK
-        # =========================
-        verify = requests.get(
-            f"https://api.paystack.co/transaction/verify/{reference}",
-            headers={"Authorization": f"Bearer {PAYSTACK_SECRET}"},
-            timeout=10
-        )
-
-        if verify.status_code != 200:
-            logging.error(f"Paystack verify failed: {reference}")
-            return "verify failed", 200
-
-        verify = verify.json()
-
-        if not verify.get("data") or verify["data"].get("status") != "success":
-            # rollback payment status
-            query(
-                "UPDATE payments SET status='failed' WHERE reference=%s",
-                (reference,)
-            )
-            return "payment not successful", 200
-
-        # =========================
-        # STEP 3: FINALIZE PAYMENT
-        # =========================
-        query(
-            """
-            UPDATE payments
-            SET status='success',
-                updated_at = NOW()
-            WHERE reference=%s
-            """,
-            (reference,)
-        )
-
-        # =========================
-        # STEP 4: UPGRADE USER
-        # =========================
-        try:
-            upgrade_user(telegram_id)
-        except Exception as e:
-            logging.error(f"Upgrade failed: {e}")
-
-        # =========================
-        # STEP 5: NOTIFY USER
-        # =========================
-        send_message(
-            telegram_id,
-            "🔥 Payment confirmed. You're now Premium!"
-        )
-
-        logging.info(f"Payment success: {reference} -> {telegram_id}")
-
-        return "ok", 200
-
-    except Exception as e:
-        logging.error(f"Webhook error: {str(e)}")
-        return "internal error", 200
-
+# DAILY TRIGGER (CRON)
 
 # =========================
+
+@app.route("/run-daily", methods=["POST"])
+def run_daily():
+    from schedule_worker import generate_and_send
+    generate_and_send()
+    return "ok", 200
+
+# =========================
+
 # HEALTH CHECK
+
 # =========================
+
 @app.route("/")
 def home():
-    return "Webhook is live 🚀", 200
+return "Webhook running 🚀", 200
 
-
-# =========================
-# RUN
-# =========================
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+if **name** == "**main**":
+app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))

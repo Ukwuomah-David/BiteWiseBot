@@ -1,10 +1,17 @@
 from db import query
-
+from cache import get_cache, set_cache
 
 # =========================
 # MENU ITEMS
 # =========================
+
 def get_menu_items():
+    cache_key = "menu_items"
+
+    cached = get_cache(cache_key)
+    if cached:
+        return cached
+
     rows = query("""
         SELECT 
             m.item_id,
@@ -15,7 +22,7 @@ def get_menu_items():
         JOIN vendors v ON m.vendor_id = v.vendor_id
     """, fetch=True)
 
-    return [
+    data = [
         {
             "item_id": r[0],
             "vendor_name": r[1],
@@ -24,6 +31,10 @@ def get_menu_items():
         }
         for r in rows
     ]
+
+    set_cache(cache_key, data, ttl=300)  # 🔥 5 minutes cache
+
+    return data
 
 
 # =========================
@@ -110,16 +121,32 @@ def save_vendor_rating(user_id, vendor, rating):
     )
 
 def get_vendor_scores():
+    cache_key = "vendor_scores"
+
+    cached = get_cache(cache_key)
+    if cached:
+        return cached
+
     rows = query("""
         SELECT vendor_name, AVG(rating)
         FROM ratings
         GROUP BY vendor_name
     """, fetch=True)
 
-    return {r[0]: float(r[1]) for r in rows} if rows else {}
+    data = {r[0]: float(r[1]) for r in rows}
+
+    set_cache(cache_key, data, ttl=120)  # 2 minutes
+
+    return data
 
     
 def get_user_vendor_scores(user_id):
+    cache_key = f"user_scores:{user_id}"
+
+    cached = get_cache(cache_key)
+    if cached:
+        return cached
+
     rows = query("""
         SELECT vendor_name, AVG(rating)
         FROM ratings
@@ -127,4 +154,8 @@ def get_user_vendor_scores(user_id):
         GROUP BY vendor_name
     """, (str(user_id),), fetch=True)
 
-    return {r[0]: float(r[1]) for r in rows} if rows else {}
+    data = {r[0]: float(r[1]) for r in rows}
+
+    set_cache(cache_key, data, ttl=60)  # 1 minute
+
+    return data
