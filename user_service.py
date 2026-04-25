@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from db import query
 from cache import clear_cache
 from datetime import datetime
-from bot import smart_recommend  # reuse your engine
+from engine import smart_recommend  # reuse your engine
 from tips import get_daily_tip
 
 
