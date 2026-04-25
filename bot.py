@@ -746,22 +746,3 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
         
-
-# =========================
-# MAIN (WEBHOOK MODE FIXED)
-# =========================
-def main():
-    app = Application.builder().token(TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("menu", menu_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    print("Bot running (WEBHOOK MODE)...")
-
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
