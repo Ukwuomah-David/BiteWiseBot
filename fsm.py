@@ -1,6 +1,6 @@
 from user_service import *
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from engine import build_meal_text, subscription_middleware
+from engine import generate_meal_payload, subscription_middleware
 FSM = {}
 
 def state(key):
@@ -30,8 +30,10 @@ async def main_menu(update, context):
 
     if text == "🍽 My Meals":
         name = update.message.from_user.first_name
+        payload = generate_meal_payload(user_id, "breakfast", context)
+
         return await update.message.reply_text(
-            build_meal_text(user_id, name, context)
+            payload["text"]
         )
 
     if text == "💰 Budget":

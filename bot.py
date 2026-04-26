@@ -10,7 +10,11 @@ from datetime import datetime, timedelta
 import engine as engine
 from db import query as safe_query
 from fsm import state, FSM
-from user_service import *
+from user_service import (
+    build_daily_meal_message,
+    rate_vendor,
+    is_premium_active
+)
 import logging
 import random
 import requests
@@ -26,7 +30,16 @@ def get_cq(update):
 def get_user_id(update):
     cq = get_cq(update)
     return cq.from_user.id if cq else update.message.from_user.id
+def build_inline_keyboard(buttons):
+    keyboard = []
 
+    for row in buttons:
+        keyboard.append([
+            InlineKeyboardButton(b["text"], callback_data=b["callback"])
+            for b in row
+        ])
+
+    return InlineKeyboardMarkup(keyboard)
 def get_user_name(update):
     cq = get_cq(update)
     return cq.from_user.first_name if cq else update.message.from_user.first_name
@@ -401,10 +414,29 @@ async def main_menu(update, context):
         )
 
     elif text == "🍽 My Meals":
-        name = update.message.from_user.first_name
-        text_out = engine.build_meal_text(user_id, name, context)
+        user = safe_get_user(user_id)
+        meals = parse_list(user.get("meals")) or ["breakfast", "lunch"]
 
-        return await update.message.reply_text(text_out)
+        for meal in meals:
+            payload = engine.generate_meal_payload(user_id, meal, context)
+
+            text_block = payload["text"]
+
+            keyboard = build_inline_keyboard(payload["buttons"])
+
+            # 🔥 PREMIUM FEATURE
+            if engine.subscription_middleware(user_id):
+                keyboard.inline_keyboard.append([
+                    InlineKeyboardButton(
+                        "🔄 Reshuffle",
+                        callback_data=f"RESHUFFLE:{meal}"
+                    )
+                ])
+
+            await update.message.reply_text(
+                text_block,
+                reply_markup=keyboard
+            )    
 
     elif text == "💰 Budget":
         save_state(user_id, state=STATE_BUDGET)
@@ -417,18 +449,6 @@ async def main_menu(update, context):
                 [InlineKeyboardButton("Open Allergies", callback_data="allergy_intro")]
             ])
         )
-
-    elif text == "🔄 Refresh Meal Plan":
-        name = update.message.from_user.first_name
-
-        text_out = engine.build_meal_text(
-            user_id,
-            name,
-            context,
-            force_refresh=True
-        )
-
-        return await update.message.reply_text(text_out)
 
     else:
         return await update.message.reply_text("⚠️ Use menu buttons.")
@@ -447,21 +467,25 @@ async def reshuffle(update, context):
     user_id = get_user_id(update)
     name = get_user_name(update)
     data = update.callback_query.data
-
     if not engine.subscription_middleware(user_id):
         return await cq.answer("Upgrade required 🚫", show_alert=True)
 
-    text = engine.build_meal_text(
-    user_id,
-    cq.from_user.first_name,
-    context,
-    force_refresh=True  # 🔥 bypass cache
-)
+    _, meal = cq.data.split(":")
+
+    payload = engine.generate_meal_payload(user_id, meal, context)
+
+    text_block = "🔄 " + payload["meal"].upper() + " (Updated)\n\n" + payload["text"].split("\n\n", 1)[1]
+
+    keyboard = build_inline_keyboard(payload["buttons"])
+
+    keyboard.inline_keyboard.append([
+        InlineKeyboardButton("🔄 Reshuffle", callback_data=f"RESHUFFLE:{meal}")
+    ])
 
     return await safe_edit(
         cq,
-        text,
-        InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Reshuffle", callback_data="reshuffle")]])
+        text_block,
+        keyboard
     )
 def get_main_menu():
     return ReplyKeyboardMarkup(
@@ -509,8 +533,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cq.data == "allergy_intro":
         return await open_allergy(update, context)
 
-    if cq.data == "reshuffle":
+    if cq.data.startswith("RESHUFFLE:"):
         return await reshuffle(update, context)
+    if cq.data.startswith("LIKE:") or cq.data.startswith("DISLIKE:"):
+        action, payload = cq.data.split(":")
+        vendor, item = payload.split("|")
+
+        value = 1 if action == "LIKE" else -1
+
+        engine.save_feedback(user_id, item, vendor, value)
+
+        responses = ["Got it 👍", "Learning... 🧠", "Nice choice 🔥", "Noted 👌"]
+        await cq.answer(random.choice(responses))
 
     # ❗ THEN check state
     if not state:
