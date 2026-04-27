@@ -26,6 +26,8 @@ import socket
 import asyncio
 from flask import Flask, request
 flask_app = Flask(__name__)
+
+
 @flask_app.route("/webhook", methods=["POST"])
 def telegram_webhook():
     data = request.get_json(force=True)
@@ -530,8 +532,8 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-async def dispatch(update):
-    context = {}
+aasync def dispatch(update):
+    context = ContextTypes.DEFAULT_TYPE(application=None)
 
     if update.callback_query:
         await route_callback(update, context)
@@ -589,7 +591,8 @@ def main():
     print(f"Webhook server running on port {port}")
 
     flask_app.run(host="0.0.0.0", port=port)
-
+if __name__ == "__main__":
+    main()
 
 
 print("Bot running (WEBHOOK MODE)...")
