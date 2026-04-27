@@ -577,7 +577,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not isinstance(state, str):
         logging.error(f"Invalid state: {state}")
         return await update.message.reply_text("⚠️ Session error. Use /start")
-
+    if text == "/start":
+    return await start(update, context)
     return await run_fsm(update, context)
 
 
