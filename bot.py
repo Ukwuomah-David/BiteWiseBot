@@ -6,7 +6,7 @@ load_dotenv()
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import CallbackQueryHandler, ContextTypes
 from telegram.error import BadRequest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 import engine as engine
 from db import query
 from core import safe_get_user, parse_list, save_list, get_or_create_user
@@ -33,7 +33,7 @@ def telegram_webhook():
     data = request.get_json(force=True)
     print("🔥 WEBHOOK HIT:", data)
 
-    update = Update.de_json(data, None)
+    update = Update.de_json(data, bot)
     asyncio.run(dispatch(update))
 
     return "ok", 200
@@ -66,7 +66,8 @@ load_dotenv(".env")
 TOKEN = os.getenv("BOT_TOKEN")
 PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
 PAYSTACK_LINK = "https://paystack.shop/pay/bitewise"
-
+from telegram import Bot
+bot = Bot(token=TOKEN)
 if not TOKEN:
     raise Exception("BOT_TOKEN missing")
 
@@ -116,12 +117,12 @@ def extend_subscription(user_id, days=30):
 
     if current:
         expiry = datetime.fromisoformat(str(current))
-        if expiry > datetime.utcnow():
+        if expiry > datetime.now(UTC):
             expiry += timedelta(days=days)
         else:
-            expiry = datetime.utcnow() + timedelta(days=days)
+            expiry = datetime.now(UTC) + timedelta(days=days)
     else:
-        expiry = datetime.utcnow() + timedelta(days=days)
+        expiry = datetime.now(UTC) + timedelta(days=days)
 
     safe_query(
         "UPDATE users SET plan='premium', subscription_expires_at=%s WHERE telegram_id=%s",
@@ -177,7 +178,7 @@ def update_seen_vendors(context, vendors):
 
 
 def get_today_meal(user_id):
-    today = datetime.utcnow().date()
+    today = datetime.now(UTC).date()
 
     rows = safe_query(
         "SELECT message FROM daily_meals WHERE telegram_id=%s AND date=%s",
