@@ -345,7 +345,7 @@ async def allergy_state(update, context):
     user_id = get_user_id(update)
     data = cq.data if cq else None
 
-    if data.startswith("TOGGLE_ALLERGY:"):
+    if data and data.startswith("TOGGLE_ALLERGY:"):
         allergy = data.split(":")[1]
 
         user = safe_get_user(user_id)
@@ -376,7 +376,7 @@ async def meal_state(update, context):
     user_id = get_user_id(update)
     data = cq.data if cq else None
 
-    if data.startswith("TOGGLE_MEAL:"):
+    if data and data.startswith("TOGGLE_MEAL:"):
         meal = data.split(":")[1]
 
         user = safe_get_user(user_id)
@@ -488,7 +488,8 @@ async def reshuffle(update, context):
     if not engine.subscription_middleware(user_id):
         return await cq.answer("Upgrade required 🚫", show_alert=True)
 
-    _, meal = cq.data.split(":")
+    _if data and ":" in data:
+        _, meal = data.split(":")
 
     payload = engine.generate_meal_payload(user_id, meal, context)
 
@@ -532,7 +533,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-aasync def dispatch(update):
+async def dispatch(update):
     context = ContextTypes.DEFAULT_TYPE(application=None)
 
     if update.callback_query:
@@ -552,10 +553,10 @@ async def route_callback(update, context):
     await cq.answer()
 
     # GLOBAL
-    if data.startswith("RESHUFFLE:"):
+    if data and data.startswith("RESHUFFLE:"):
         return await reshuffle(update, context)
 
-    if data.startswith("LIKE:") or data.startswith("DISLIKE:"):
+    if data and data.startswith("LIKE:") or data.startswith("DISLIKE:"):
         # keep your logic
         return
     return await run_fsm(update, context)
