@@ -483,13 +483,16 @@ async def open_allergy(update, context):
 async def reshuffle(update, context):
     cq = get_cq(update)
     user_id = get_user_id(update)
-    name = get_user_name(update)
+
     data = cq.data if cq else None
+
     if not engine.subscription_middleware(user_id):
         return await cq.answer("Upgrade required 🚫", show_alert=True)
 
-    _if data and ":" in data:
-        _, meal = data.split(":")
+    if not data or ":" not in data:
+        return await cq.answer("Invalid request", show_alert=True)
+
+    _, meal = data.split(":")
 
     payload = engine.generate_meal_payload(user_id, meal, context)
 
@@ -501,11 +504,7 @@ async def reshuffle(update, context):
         InlineKeyboardButton("🔄 Reshuffle", callback_data=f"RESHUFFLE:{meal}")
     ])
 
-    return await safe_edit(
-        cq,
-        text_block,
-        keyboard
-    )
+    return await safe_edit(cq, text_block, keyboard)
 def get_main_menu():
     return ReplyKeyboardMarkup(
         [
