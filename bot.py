@@ -31,8 +31,9 @@ flask_app = Flask(__name__)
 @flask_app.route("/webhook", methods=["POST"])
 def telegram_webhook():
     data = request.get_json(force=True)
-    update = Update.de_json(data, None)
+    print("🔥 WEBHOOK HIT:", data)
 
+    update = Update.de_json(data, None)
     asyncio.run(dispatch(update))
 
     return "ok", 200
