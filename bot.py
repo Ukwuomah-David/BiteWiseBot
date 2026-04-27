@@ -4,24 +4,36 @@
 from dotenv import load_dotenv
 load_dotenv()
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import CallbackQueryHandler, ContextTypes
 from telegram.error import BadRequest
 from datetime import datetime, timedelta
 import engine as engine
+from db import query
+from core import safe_get_user, parse_list, save_list, get_or_create_user
 from db import query as safe_query
-from fsm import state, FSM
+from fsm_engine import state, run_fsm, set_state, can_transition, get_state
+import fsm_transitions  # VERY IMPORTANT (loads graph)
 from user_service import (
     build_daily_meal_message,
     rate_vendor,
     is_premium_active
 )
 import logging
-import random
 import requests
 import os
 import uuid
-import time
 import socket
+import asyncio
+from flask import Flask, request
+flask_app = Flask(__name__)
+@flask_app.route("/webhook", methods=["POST"])
+def telegram_webhook():
+    data = request.get_json(force=True)
+    update = Update.de_json(data, None)
+
+    asyncio.run(dispatch(update))
+
+    return "ok", 200
 socket.setdefaulttimeout(30)
 logging.basicConfig(level=logging.INFO)
 def get_cq(update):
@@ -245,7 +257,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     get_or_create_user(user_id, name)
     user_id = update.message.from_user.id
-
     msg = get_today_meal(user_id)
 
     if msg:
@@ -258,7 +269,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("❌ No", callback_data="tithe_no")]
         ])
     )
-
+    set_state(user_id, "TITHE")
 def safe_handler(fn):
     async def wrapper(update, context):
         try:
@@ -280,10 +291,10 @@ async def tithe_screen(update, context):
     cq = get_cq(update)
     user_id = get_user_id(update)
     name = get_user_name(update)
-    data = update.callback_query.data
+    data = cq.data if cq else None
     
 
-    save_state(user_id, state=STATE_TITHE)
+    
 
     return await safe_edit(
         cq,
@@ -300,8 +311,8 @@ async def welcome_screen(update, context):
     cq = get_cq(update)
     user_id = get_user_id(update)
     name = get_user_name(update)
-    data = update.callback_query.data
-    save_state(user_id, state=STATE_WELCOME)
+    data = cq.data if cq else None
+    
 
     return await safe_edit(
         cq,
@@ -315,10 +326,10 @@ async def budget_screen(update, context):
     cq = get_cq(update)
     user_id = get_user_id(update)
     name = get_user_name(update)
-    data = update.callback_query.data
+    data = cq.data if cq else None
 
 
-    save_state(user_id, state=STATE_BUDGET)
+    
 
     return await safe_edit(
         cq,
@@ -330,7 +341,7 @@ async def budget_screen(update, context):
 async def allergy_state(update, context):
     cq = get_cq(update)
     user_id = get_user_id(update)
-    data = cq.data
+    data = cq.data if cq else None
 
     if data.startswith("TOGGLE_ALLERGY:"):
         allergy = data.split(":")[1]
@@ -348,14 +359,20 @@ async def allergy_state(update, context):
         return await render_allergy_ui(cq, user_id, get_user_name(update))
 
     if data == "allergy_done":
-        save_state(user_id, state="MEAL")
-        return await render_meal_ui(cq, user_id, get_user_name(update))
+        next_state = can_transition(user_id, "MEAL")
+
+        if not next_state:
+            return await cq.answer("Invalid transition", show_alert=True)
+
+        set_state(user_id, "MEAL")
+        return await run_fsm(update, context)
+    
 
 @state("MEAL")
 async def meal_state(update, context):
     cq = get_cq(update)
     user_id = get_user_id(update)
-    data = cq.data
+    data = cq.data if cq else None
 
     if data.startswith("TOGGLE_MEAL:"):
         meal = data.split(":")[1]
@@ -373,14 +390,13 @@ async def meal_state(update, context):
         return await render_meal_ui(cq, user_id, get_user_name(update))
 
     if data == "meal_done":
-        save_state(user_id, state="MAIN_MENU")
+        next_state = can_transition(user_id, "MAIN_MENU")
 
-        await safe_edit(cq, "✅ Setup complete!")
+        if not next_state:
+            return await cq.answer("Invalid action", show_alert=True)
 
-        return await cq.message.reply_text(
-            "📋 Main Menu",
-            reply_markup=get_main_menu()
-        )
+        set_state(user_id, "MAIN_MENU")
+        return await run_fsm(update, context)
 
 @state("MAIN_MENU")
 async def main_menu(update, context):
@@ -439,7 +455,7 @@ async def main_menu(update, context):
             )    
 
     elif text == "💰 Budget":
-        save_state(user_id, state=STATE_BUDGET)
+        
         return await update.message.reply_text("💰 Enter new budget:")
 
     elif text == "🤧 Allergies":
@@ -455,18 +471,18 @@ async def main_menu(update, context):
 
 async def open_allergy(update, context):
     cq = get_cq(update)
-    data = cq.data
+    data = cq.data if cq else None
 
     if data == "allergy_intro":
         user_id = get_user_id(update)
 
-        save_state(user_id, state="ALLERGY")
+        
         return await render_allergy_ui(cq, user_id, get_user_name(update))
 async def reshuffle(update, context):
     cq = get_cq(update)
     user_id = get_user_id(update)
     name = get_user_name(update)
-    data = update.callback_query.data
+    data = cq.data if cq else None
     if not engine.subscription_middleware(user_id):
         return await cq.answer("Upgrade required 🚫", show_alert=True)
 
@@ -504,8 +520,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_onboarding_complete(user_id):
         return await update.message.reply_text("⚠️ Complete onboarding first.")
 
-    # ✅ SET FSM STATE HERE (CORRECT PLACE)
-    save_state(user_id, state="MAIN_MENU")
+    
 
     await update.message.reply_text(
         f"📋 Main Menu\nWelcome {name}",
@@ -514,53 +529,36 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+
+async def dispatch(update):
+    context = {}
+
+    if update.callback_query:
+        await route_callback(update, context)
+    elif update.message:
+        await handle_message(update, context)
+
 # =========================
 # HANDLERS (UNCHANGED)
 # =========================
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def route_callback(update, context):
     cq = update.callback_query
-
-    try:
-        await cq.answer()
-    except:
-        pass
-
+    data = cq.data
     user_id = cq.from_user.id
-    state = get_state(user_id)
 
-    # ✅ GLOBAL BUTTONS (must be BEFORE state check)
-    if cq.data == "allergy_intro":
-        return await open_allergy(update, context)
+    await cq.answer()
 
-    if cq.data.startswith("RESHUFFLE:"):
+    # GLOBAL
+    if data.startswith("RESHUFFLE:"):
         return await reshuffle(update, context)
-    if cq.data.startswith("LIKE:") or cq.data.startswith("DISLIKE:"):
-        action, payload = cq.data.split(":")
-        vendor, item = payload.split("|")
 
-        value = 1 if action == "LIKE" else -1
-
-        engine.save_feedback(user_id, item, vendor, value)
-
-        responses = ["Got it 👍", "Learning... 🧠", "Nice choice 🔥", "Noted 👌"]
-        await cq.answer(random.choice(responses))
-
-    # ❗ THEN check state
-    if not state:
-        return await cq.message.reply_text("⚠️ Session expired. Type /start")
-
-    handler = FSM.get(state)
-
-    if not handler:
-        return await cq.message.reply_text("⚠️ Unknown state")
-
-    try:
-        return await handler(update, context)
-    except Exception as e:
-        logging.error(f"FSM error: {e}")
-        return await cq.message.reply_text("⚠️ Something went wrong")
-
+    if data.startswith("LIKE:") or data.startswith("DISLIKE:"):
+        # keep your logic
+        return
+    return await run_fsm(update, context)
+    
+        
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -568,36 +566,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = get_state(user_id)
 
+    logging.info(f"Message state={state} user={user_id} text={text}")
+
+    if not state:
+        set_state(user_id, "TITHE")
+        return await run_fsm(update, context)
+
     if not isinstance(state, str):
-        logging.error(f"Invalid state: {state} for user {user_id}")
+        logging.error(f"Invalid state: {state}")
         return await update.message.reply_text("⚠️ Session error. Use /start")
 
-    # =========================
-    # FSM ROUTING
-    # =========================
-    handler = FSM.get(state)
+    return await run_fsm(update, context)
 
-    if handler:
-        return await handler(update, context)
 
-    
-        
-logging.info(f"Unhandled message state={state} user={user_id} text={text}")
 # =========================
 # MAIN (WEBHOOK MODE FIXED)
 # =========================
+
 def main():
-    app = Application.builder().token(TOKEN).connect_timeout(30).read_timeout(30).build()
+    port = int(os.environ.get("PORT", 10000))
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("menu", menu_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    print("Bot running (WEBHOOK MODE)...")
+    print(f"Webhook server running on port {port}")
 
-    app.run_polling()
+    flask_app.run(host="0.0.0.0", port=port)
 
 
-if __name__ == "__main__":
-    main()
+
+print("Bot running (WEBHOOK MODE)...")
+
