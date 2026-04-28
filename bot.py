@@ -26,7 +26,11 @@ import socket
 import asyncio
 from flask import Flask, request
 flask_app = Flask(__name__)
+import atexit
 
+
+
+# Run ONCE when module loads (safe for gunicorn)
 @flask_app.route("/", methods=["GET"])
 def home():
     return "Bot is running", 200
@@ -43,7 +47,11 @@ def telegram_webhook():
 
         update = Update.de_json(data, bot)
 
-        asyncio.run(dispatch(update))
+        
+
+         loop = asyncio.new_event_loop()
+         asyncio.set_event_loop(loop)
+         loop.run_until_complete(dispatch(update))
 
         return "ok", 200
 
@@ -74,24 +82,26 @@ def get_user_name(update):
 if not callable(query):
     raise Exception("DB query function not loaded properly")
 
-load_dotenv(".env")
+
 
 TOKEN = os.getenv("BOT_TOKEN")
-PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
-PAYSTACK_LINK = "https://paystack.shop/pay/bitewise"
+if not TOKEN:
+    raise Exception("BOT_TOKEN missing")
 from telegram import Bot
 bot = Bot(token=TOKEN)
+
+PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
+PAYSTACK_LINK = "https://paystack.shop/pay/bitewise"
 
 
 # 🔥 AUTO SET WEBHOOK ON START (WORKS WITH GUNICORN)
 def init_app():
     print("🚀 Initializing bot...")
+    if os.getenv("BASE_URL"):
+        set_webhook()
 
-    if os.getenv("RENDER"):
-        try:
-            set_webhook()
-        except Exception as e:
-            print("❌ Webhook setup failed:", e)
+
+    
 def set_webhook():
     base_url = os.getenv("BASE_URL")
 
@@ -109,8 +119,7 @@ def set_webhook():
     )
 
     print("📡 Telegram response:", res.json())
-if not TOKEN:
-    raise Exception("BOT_TOKEN missing")
+
 
 if not PAYSTACK_SECRET:
     raise Exception("PAYSTACK_SECRET missing")
@@ -141,7 +150,11 @@ def create_payment_link(user_id):
         timeout= 10
     )
 
-    res_json = res.json()
+    try:
+        res_json = res.json()
+    except Excpetion:
+        logging.error("Paystack returned invalid JSON")
+        return
 
     if not res_json.get("status"):
         logging.error(f"Paystack error: {res_json}")
@@ -343,6 +356,8 @@ async def tithe_screen(update, context):
 
         if next_state:
             set_state(user_id, next_state)
+        else:
+            logging.warning(f"No transition for user={user_id} data={data}")
             return await run_fsm(update, context)
 
     return await safe_edit(
@@ -367,6 +382,8 @@ async def welcome_screen(update, context):
 
         if next_state:
             set_state(user_id, next_state)
+        else:
+            logging.warning(f"No transition for user={user_id} data={data}")
             return await run_fsm(update, context)
 
     return await safe_edit(
@@ -605,12 +622,16 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def dispatch(update):
-    context = None
+    try:
+        context = None
 
-    if update.callback_query:
-        await route_callback(update, context)
-    elif update.message:
-        await handle_message(update, context)
+        if update.callback_query:
+            await route_callback(update, context)
+        elif update.message:
+            await handle_message(update, context)
+
+    except Exception as e:
+        logging.error(f"DISPATCH CRASH: {e}")
 
 # =========================
 # HANDLERS (UNCHANGED)
@@ -647,6 +668,8 @@ async def route_callback(update, context):
 
     if next_state:
         set_state(user_id, next_state)
+    else:
+        logging.warning(f"No transition for user={user_id} data={data}")
 
     return await run_fsm(update, context)
     
@@ -676,22 +699,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return await run_fsm(update, context)
 
+def start_server():
+    print("🚀 Starting Flask server...")
 
-# =========================
-# MAIN (WEBHOOK MODE FIXED)
-# =========================
+    # only set webhook once when server starts
+    if os.getenv("BASE_URL"):
+        set_webhook()
 
-def main():
     port = int(os.environ.get("PORT", 10000))
-
-    init_app()  # 🔥 IMPORTANT FIX
-
-    print(f"Webhook server running on port {port}")
-
     flask_app.run(host="0.0.0.0", port=port)
+
+
 if __name__ == "__main__":
-    main()
-
-
-print("Bot running (WEBHOOK MODE)...")
-
+    start_server()
