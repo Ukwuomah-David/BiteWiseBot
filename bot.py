@@ -16,9 +16,8 @@ import fsm_transitions  # VERY IMPORTANT (loads graph)
 from user_service import (
     build_daily_meal_message,
     rate_vendor,
-
+    subscription_middleware
 )
-from bot import get_main_menu
 import logging
 import requests
 import os
@@ -458,7 +457,7 @@ async def main_menu(update, context):
         )
 
     elif text == "💳 Subscription":
-        active = engine.subscription_middleware(user_id)
+        active = subscription_middleware(user_id)
         status = "✅ Active" if active else "❌ Expired"
 
         return await update.message.reply_text(
@@ -477,7 +476,7 @@ async def main_menu(update, context):
             keyboard = build_inline_keyboard(payload["buttons"])
 
             # 🔥 PREMIUM FEATURE
-            if engine.subscription_middleware(user_id):
+            if subscription_middleware(user_id):
                 keyboard.inline_keyboard.append([
                     InlineKeyboardButton(
                         "🔄 Reshuffle",
@@ -520,7 +519,7 @@ async def reshuffle(update, context):
 
     data = cq.data if cq else None
 
-    if not engine.subscription_middleware(user_id):
+    if not subscription_middleware(user_id):
         return await cq.answer("Upgrade required 🚫", show_alert=True)
 
     if not data or ":" not in data:

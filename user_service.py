@@ -52,12 +52,7 @@ def build_daily_meal_message(user_id):
 # =========================
 # PREMIUM
 # =========================
-def engine.subscription_middleware(user_id):
-    user = safe_get_user(user_id)
-    return user and user.get("plan") == "premium"
-
-
-def engine.subscription_middleware(user_id):
+def subscription_middleware(user_id):
     user = safe_get_user(user_id)
 
     if not user or user.get("plan") != "premium":
