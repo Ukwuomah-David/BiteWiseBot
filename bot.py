@@ -27,19 +27,29 @@ import asyncio
 from flask import Flask, request
 flask_app = Flask(__name__)
 
+@flask_app.route("/", methods=["GET"])
+def home():
+    return "Bot is running", 200
 @flask_app.route("/paystack-webhook", methods=["POST"])
 def paystack_webhook():
     from webhook import webhook
     return webhook()
 @flask_app.route("/webhook", methods=["POST"])
 def telegram_webhook():
-    data = request.get_json(force=True)
-    print("🔥 WEBHOOK HIT:", data)
+    try:
+        data = request.get_json(force=True)
 
-    update = Update.de_json(data, bot)
-    asyncio.run(dispatch(update))
+        print("🔥 WEBHOOK HIT:", data)
 
-    return "ok", 200
+        update = Update.de_json(data, bot)
+
+        asyncio.run(dispatch(update))
+
+        return "ok", 200
+
+    except Exception as e:
+        print("❌ WEBHOOK ERROR:", e)
+        return "error", 200   # IMPORTANT: always return 200 to Telegram
 socket.setdefaulttimeout(30)
 logging.basicConfig(level=logging.INFO)
 def get_cq(update):
@@ -71,6 +81,34 @@ PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
 PAYSTACK_LINK = "https://paystack.shop/pay/bitewise"
 from telegram import Bot
 bot = Bot(token=TOKEN)
+
+
+# 🔥 AUTO SET WEBHOOK ON START (WORKS WITH GUNICORN)
+def init_app():
+    print("🚀 Initializing bot...")
+
+    if os.getenv("RENDER"):
+        try:
+            set_webhook()
+        except Exception as e:
+            print("❌ Webhook setup failed:", e)
+def set_webhook():
+    base_url = os.getenv("BASE_URL")
+
+    if not base_url:
+        print("❌ BASE_URL not set")
+        return
+
+    webhook_url = f"{base_url}/webhook"
+
+    print(f"🔗 Setting webhook to: {webhook_url}")
+
+    res = requests.get(
+        f"https://api.telegram.org/bot{TOKEN}/setWebhook",
+        params={"url": webhook_url}
+    )
+
+    print("📡 Telegram response:", res.json())
 if not TOKEN:
     raise Exception("BOT_TOKEN missing")
 
@@ -620,6 +658,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user_id = update.message.from_user.id
 
+    # ✅ ALWAYS HANDLE /start FIRST
+    if text == "/start":
+        return await start(update, context)
+
     state = get_state(user_id)
 
     logging.info(f"Message state={state} user={user_id} text={text}")
@@ -631,8 +673,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not isinstance(state, str):
         logging.error(f"Invalid state: {state}")
         return await update.message.reply_text("⚠️ Session error. Use /start")
-    if text == "/start":
-        return await start(update, context)
+
     return await run_fsm(update, context)
 
 
@@ -642,6 +683,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     port = int(os.environ.get("PORT", 10000))
+
+    init_app()  # 🔥 IMPORTANT FIX
 
     print(f"Webhook server running on port {port}")
 
