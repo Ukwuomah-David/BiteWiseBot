@@ -8,7 +8,7 @@ import logging
 from db import query
 from redis_queue import push_payment_job
 
-app = Flask(**name**)
+
 
 PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO)
 def send_telegram_message(user_id, text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-    ```
+    
     try:
         res = requests.post(
             url,
@@ -34,7 +34,7 @@ def send_telegram_message(user_id, text):
                 "reply_markup": {
                     "inline_keyboard": [
                         [
-                            {"text": "🍽 View My Meals", "callback_data": "reshuffle"}
+                            {"text": "🍽 Open Menu", "callback_data": "menu"}
                         ]
                     ]
                 }
@@ -47,7 +47,7 @@ def send_telegram_message(user_id, text):
 
     except Exception as e:
         logging.error(f"Telegram send error: {e}")
-    ```
+    
 
 # =========================
 
@@ -56,19 +56,18 @@ def send_telegram_message(user_id, text):
 # =========================
 
 def verify_signature(req):
-signature = req.headers.get("x-paystack-signature")
+    signature = req.headers.get("x-paystack-signature")
 
-```
-if not signature or not PAYSTACK_SECRET:
-    return False
+    if not signature or not PAYSTACK_SECRET:
+        return False
 
-computed = hmac.new(
-    PAYSTACK_SECRET.encode(),
-    req.data,
-    hashlib.sha512
-).hexdigest()
+    computed = hmac.new(
+        PAYSTACK_SECRET.encode(),
+        req.data,
+        hashlib.sha512
+    ).hexdigest()
 
-return hmac.compare_digest(signature, computed)
+    return hmac.compare_digest(signature, computed)
 ```
 
 # =========================
@@ -95,7 +94,6 @@ return None
 
 # =========================
 
-@app.route("/paystack-webhook", methods=["POST"])
 def webhook():
 try:
 # 🔒 Signature check
@@ -155,17 +153,6 @@ return "invalid signature", 400
     # UPDATE PAYMENT STATUS
     # =========================
     query(
-        "UPDATE payments SET status='success' WHERE reference=%s",
-        (reference,)
-    )
-
-    # =========================
-    # QUEUE BACKGROUND JOB
-    # =========================
-        # =========================
-    # MARK AS SUCCESS (FAST PATH)
-    # =========================
-    query(
         """
         UPDATE payments
         SET status='success', updated_at=NOW()
@@ -174,6 +161,7 @@ return "invalid signature", 400
         (reference,)
     )
 
+    
     # =========================
     # ACTIVATE USER
     # =========================
@@ -199,28 +187,3 @@ except Exception as e:
     logging.error(f"Webhook error: {e}")
     return "internal error", 200
 ```
-
-# =========================
-
-# DAILY TRIGGER (CRON)
-
-# =========================
-
-@app.route("/run-daily", methods=["POST"])
-def run_daily():
-    from schedule_worker import generate_and_send
-    generate_and_send()
-    return "ok", 200
-
-# =========================
-
-# HEALTH CHECK
-
-# =========================
-
-@app.route("/")
-def home():
-return "Webhook running 🚀", 200
-
-if **name** == "**main**":
-app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))

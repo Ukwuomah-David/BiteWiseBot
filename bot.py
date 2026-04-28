@@ -16,8 +16,9 @@ import fsm_transitions  # VERY IMPORTANT (loads graph)
 from user_service import (
     build_daily_meal_message,
     rate_vendor,
-    is_premium_active
+
 )
+from bot import get_main_menu
 import logging
 import requests
 import os
@@ -27,7 +28,10 @@ import asyncio
 from flask import Flask, request
 flask_app = Flask(__name__)
 
-
+@flask_app.route("/paystack-webhook", methods=["POST"])
+def paystack_webhook():
+    from webhook import webhook
+    return webhook()
 @flask_app.route("/webhook", methods=["POST"])
 def telegram_webhook():
     data = request.get_json(force=True)
@@ -269,7 +273,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"👋 {name}, ready to build financial discipline?",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Yes", callback_data="ready_yes"),
+            [InlineKeyboardButton("✅ Yes", callback_data="tithe_yes"),
              InlineKeyboardButton("❌ No", callback_data="tithe_no")]
         ])
     )
@@ -296,9 +300,13 @@ async def tithe_screen(update, context):
     user_id = get_user_id(update)
     name = get_user_name(update)
     data = cq.data if cq else None
-    
 
-    
+    if data == "tithe_yes" or data == "tithe_no":
+        next_state = can_transition(user_id, data)
+
+        if next_state:
+            set_state(user_id, next_state)
+            return await run_fsm(update, context)
 
     return await safe_edit(
         cq,
@@ -316,12 +324,20 @@ async def welcome_screen(update, context):
     user_id = get_user_id(update)
     name = get_user_name(update)
     data = cq.data if cq else None
-    
+
+    if data == "proceed":
+        next_state = can_transition(user_id, "proceed")
+
+        if next_state:
+            set_state(user_id, next_state)
+            return await run_fsm(update, context)
 
     return await safe_edit(
         cq,
         "🚀 Welcome to BiteWise!\n\nMeal planning + budget control 🍽💰",
-        InlineKeyboardMarkup([[InlineKeyboardButton("➡️ Proceed", callback_data="proceed")]])
+        InlineKeyboardMarkup([
+            [InlineKeyboardButton("➡️ Proceed", callback_data="proceed")]
+        ])
     )
 
 
@@ -330,11 +346,27 @@ async def budget_screen(update, context):
     cq = get_cq(update)
     user_id = get_user_id(update)
     name = get_user_name(update)
-    data = cq.data if cq else None
 
+    # 👉 USER TYPED BUDGET
+    if update.message:
+        try:
+            amount = int(update.message.text.strip())
 
-    
+            if amount < 1500:
+                return await update.message.reply_text("❌ Minimum is ₦1500")
 
+            safe_query(
+                "UPDATE users SET budget=%s WHERE telegram_id=%s",
+                (amount, str(user_id))
+            )
+
+            set_state(user_id, "ALLERGY")
+            return await run_fsm(update, context)
+
+        except:
+            return await update.message.reply_text("❌ Enter a valid number")
+
+    # 👉 FIRST ENTRY SCREEN
     return await safe_edit(
         cq,
         f"💰 {name}, enter your daily budget (₦)\nMinimum: ₦1500"
@@ -363,7 +395,7 @@ async def allergy_state(update, context):
         return await render_allergy_ui(cq, user_id, get_user_name(update))
 
     if data == "allergy_done":
-        next_state = can_transition(user_id, "MEAL")
+        next_state = can_transition(user_id, "allergy_done")
 
         if not next_state:
             return await cq.answer("Invalid transition", show_alert=True)
@@ -394,7 +426,7 @@ async def meal_state(update, context):
         return await render_meal_ui(cq, user_id, get_user_name(update))
 
     if data == "meal_done":
-        next_state = can_transition(user_id, "MAIN_MENU")
+        next_state = can_transition(user_id, "meal_done")
 
         if not next_state:
             return await cq.answer("Invalid action", show_alert=True)
@@ -517,6 +549,7 @@ def get_main_menu():
         ],
         resize_keyboard=True
     )
+
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     name = update.message.from_user.first_name
@@ -535,7 +568,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def dispatch(update):
-    context = ContextTypes.DEFAULT_TYPE(application=None)
+    context = None
 
     if update.callback_query:
         await route_callback(update, context)
@@ -552,15 +585,35 @@ async def route_callback(update, context):
     user_id = cq.from_user.id
 
     await cq.answer()
-
-    # GLOBAL
+    if data == "menu":
+        await cq.message.reply_text(
+            "📋 Main Menu",
+            reply_markup=get_main_menu()
+        )
+        return
+    # 🔥 HANDLE GLOBAL FIRST
     if data and data.startswith("RESHUFFLE:"):
         return await reshuffle(update, context)
 
-    if data and data.startswith("LIKE:") or data.startswith("DISLIKE:"):
-        # keep your logic
-        return
+    if data and (data.startswith("LIKE:") or data.startswith("DISLIKE:")):
+        action, payload = data.split(":")
+        vendor, item = payload.split("|")
+
+        value = 1 if action == "LIKE" else -1
+
+        engine.save_feedback(user_id, item, vendor, value)
+
+        return await cq.answer("Saved 👍")
+
+    # ✅ APPLY FSM TRANSITION
+    next_state = can_transition(user_id, data)
+
+    if next_state:
+        set_state(user_id, next_state)
+
     return await run_fsm(update, context)
+    
+    
     
         
 

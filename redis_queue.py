@@ -19,7 +19,7 @@ def push_payment_job(reference, telegram_id):
 
     r.lpush(QUEUE_KEY, json.dumps(job))
 
-job = pop_payment_job()
+def pop_payment_job():
     data = r.brpop(QUEUE_KEY, timeout=10)
     if not data:
         return None

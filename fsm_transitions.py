@@ -1,5 +1,5 @@
 from fsm_engine import add_transition
-from user_service import is_premium_active
+
 
 # TITHE
 add_transition("TITHE", "tithe_yes", "WELCOME")

@@ -59,7 +59,7 @@ def process_payment(reference, telegram_id):
 
 def worker_loop():
     while True:
-        job = get_payment_job()
+        job = pop_payment_job()
 
         if not job:
             time.sleep(1)

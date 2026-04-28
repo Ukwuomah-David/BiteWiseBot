@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, UTC
 import random
 from sheets import get_menu_items, get_vendor_scores, get_user_vendor_scores
 from core import safe_get_user, parse_list
@@ -69,16 +69,19 @@ def get_cached_vendor_scores():
 # =========================
 def subscription_middleware(user_id):
     user = safe_get_user(user_id)
+
     if not user:
         return False
 
     expiry = user.get("subscription_expires_at")
+
     if not expiry:
         return False
 
     expiry_date = datetime.fromisoformat(str(expiry))
 
-    if datetime.utcnow() > expiry_date:
+    if expiry_date < datetime.now(UTC):
+        # 🔥 AUTO EXPIRE USER
         safe_query(
             "UPDATE users SET plan='free' WHERE telegram_id=%s",
             (str(user_id),)
@@ -251,7 +254,7 @@ def time_decay_weight(created_at):
     Newer meals = stronger penalty
     Older meals = fade out
     """
-    age_seconds = (datetime.utcnow() - created_at).total_seconds()
+    age_seconds = (datetime.now(UTC) - created_at).total_seconds()
 
     # decay over ~3 days
     return max(0.1, 1 - (age_seconds / (60 * 60 * 24 * 3)))

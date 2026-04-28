@@ -1,3 +1,7 @@
+from datetime import datetime, timedelta
+from sheets import get_user
+from engine import smart_recommend
+from sheets import update_user
 from cache import clear_cache
 from tips import get_daily_tip
 from core import (
@@ -8,6 +12,8 @@ from core import (
     parse_list,
     save_list
 )
+from db import query
+
 
 def build_daily_meal_message(user_id):
     user = get_user(user_id)
@@ -46,18 +52,18 @@ def build_daily_meal_message(user_id):
 # =========================
 # PREMIUM
 # =========================
-def is_premium(user_id):
+def engine.subscription_middleware(user_id):
     user = safe_get_user(user_id)
     return user and user.get("plan") == "premium"
 
 
-def is_premium_active(user_id):
+def engine.subscription_middleware(user_id):
     user = safe_get_user(user_id)
 
     if not user or user.get("plan") != "premium":
         return False
 
-    expiry = user.get("premium_expiry")
+    expiry = user.get("subscription_expires_at")
     if not expiry:
         return False
 
@@ -71,13 +77,18 @@ def is_premium_active(user_id):
         return False
 
 
-def upgrade_user(user_id, plan="premium"):
-    expiry = datetime.utcnow() + timedelta(days=7)
 
-    update_user(
-        user_id,
-        plan=plan,
-        premium_expiry=expiry.isoformat()
+
+def upgrade_user(user_id, plan="premium"):
+    expiry = datetime.utcnow() + timedelta(days=30)
+
+    query(
+        """
+        UPDATE users
+        SET plan='premium', subscription_expires_at=%s
+        WHERE telegram_id=%s
+        """,
+        (expiry.isoformat(), str(user_id))
     )
 
 
@@ -89,7 +100,7 @@ def cancel_subscription(user_id):
 # RATINGS
 # =========================
 def can_rate(user_id):
-    return is_premium_active(user_id)
+    return engine.subscription_middleware(user_id)
 
 
 
