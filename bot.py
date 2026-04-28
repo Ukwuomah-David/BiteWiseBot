@@ -47,13 +47,13 @@ def telegram_webhook():
 
         update = Update.de_json(data, bot)
 
-        
-
-         loop = asyncio.new_event_loop()
-         asyncio.set_event_loop(loop)
-         loop.run_until_complete(dispatch(update))
+        asyncio.run(dispatch(update))
 
         return "ok", 200
+
+    except Exception as e:
+        print("❌ WEBHOOK ERROR:", e)
+        return "error", 200
 
     except Exception as e:
         print("❌ WEBHOOK ERROR:", e)
