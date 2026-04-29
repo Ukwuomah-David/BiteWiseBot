@@ -43,17 +43,21 @@ def telegram_webhook():
     try:
         data = request.get_json(force=True)
 
-        print("🔥 WEBHOOK HIT:", data)
+        print("🔥 WEBHOOK HIT RAW:", data)
 
         update = Update.de_json(data, bot)
 
-        asyncio.run(dispatch(update))  # ✅ SAFE
+        print("✅ UPDATE PARSED:", update)
+
+        asyncio.run(dispatch(update))
 
         return "ok", 200
 
     except Exception as e:
-        print("❌ WEBHOOK ERROR:", e)
-        return "ok", 200
+        print("❌ WEBHOOK ERROR FULL:", str(e))
+        import traceback
+        traceback.print_exc()
+        return "error", 500   # ❗ IMPORTANT CHANGE
 
     
 socket.setdefaulttimeout(30)
@@ -324,6 +328,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
     )
     set_state(user_id, "TITHE")
+    await run_fsm(update, context)   # ✅ ADD THIS
 def safe_handler(fn):
     async def wrapper(update, context):
         try:
