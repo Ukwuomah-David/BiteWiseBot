@@ -47,17 +47,16 @@ def telegram_webhook():
 
         update = Update.de_json(data, bot)
 
-        asyncio.run(dispatch(update))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(dispatch(update))
+        loop.close()
 
         return "ok", 200
 
     except Exception as e:
         print("❌ WEBHOOK ERROR:", e)
-        return "error", 200
-
-    except Exception as e:
-        print("❌ WEBHOOK ERROR:", e)
-        return "error", 200   # IMPORTANT: always return 200 to Telegram
+        return "ok", 200
 socket.setdefaulttimeout(30)
 logging.basicConfig(level=logging.INFO)
 def get_cq(update):
@@ -310,6 +309,7 @@ async def render_meal_ui(query, user_id, name):
 # START (UNCHANGED)
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("✅ START TRIGGERED")
     user_id = update.message.from_user.id
     name = update.message.from_user.first_name
 
@@ -621,9 +621,13 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+class DummyContext:
+    def __init__(self):
+        self.user_data = {}
+
 async def dispatch(update):
     try:
-        context = None
+        context = DummyContext()
 
         if update.callback_query:
             await route_callback(update, context)
