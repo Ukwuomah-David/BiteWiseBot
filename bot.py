@@ -49,10 +49,8 @@ def telegram_webhook():
 
         print("✅ UPDATE PARSED:", update)
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(dispatch(update))
-        loop.close()
+        # ✅ FIX: use asyncio.run (clean loop each time)
+        asyncio.run(dispatch(update))
 
         return "ok", 200
 
@@ -60,8 +58,7 @@ def telegram_webhook():
         print("❌ WEBHOOK ERROR FULL:", str(e))
         import traceback
         traceback.print_exc()
-        return "error", 500   # ❗ IMPORTANT CHANGE
-
+        return "error", 500
     
 socket.setdefaulttimeout(30)
 logging.basicConfig(level=logging.INFO)
@@ -353,18 +350,8 @@ async def tithe_screen(update, context):
     cq = get_cq(update)
     if not cq:
         return
-    user_id = get_user_id(update)
+
     name = get_user_name(update)
-    data = cq.data if cq else None
-
-    if data == "tithe_yes" or data == "tithe_no":
-        next_state = can_transition(user_id, data)
-
-        if next_state:
-            set_state(user_id, next_state)
-        else:
-            logging.warning(f"No transition for user={user_id} data={data}")
-            return await run_fsm(update, context)
 
     return await safe_edit(
         cq,
@@ -375,7 +362,6 @@ async def tithe_screen(update, context):
         ])
     )
 
-
 @state("WELCOME")
 async def welcome_screen(update, context):
     cq = get_cq(update)
@@ -385,9 +371,8 @@ async def welcome_screen(update, context):
     name = get_user_name(update)
     data = cq.data if cq else None
 
-    if data == "proceed":
-        next_state = can_transition(user_id, "proceed")
-
+    
+        next_state = can_transition(user_id, data)
         if next_state:
             set_state(user_id, next_state)
         else:
