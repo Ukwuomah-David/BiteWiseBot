@@ -10,7 +10,6 @@ from datetime import datetime, timedelta, UTC
 import engine as engine
 from db import query
 from core import safe_get_user, parse_list, save_list, get_or_create_user
-from db import query as safe_query
 from fsm_engine import state, run_fsm, set_state, can_transition, get_state
 import fsm_transitions  # VERY IMPORTANT (loads graph)
 from user_service import (
@@ -26,7 +25,7 @@ import socket
 import asyncio
 from flask import Flask, request
 flask_app = Flask(__name__)
-import atexit
+
 
 
 
@@ -38,6 +37,7 @@ def home():
 def paystack_webhook():
     from webhook import webhook
     return webhook()
+
 @flask_app.route("/webhook", methods=["POST"])
 def telegram_webhook():
     try:
@@ -47,16 +47,15 @@ def telegram_webhook():
 
         update = Update.de_json(data, bot)
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(dispatch(update))
-        loop.close()
+        asyncio.run(dispatch(update))  # ✅ SAFE
 
         return "ok", 200
 
     except Exception as e:
         print("❌ WEBHOOK ERROR:", e)
         return "ok", 200
+
+    
 socket.setdefaulttimeout(30)
 logging.basicConfig(level=logging.INFO)
 def get_cq(update):
@@ -81,29 +80,6 @@ def get_user_name(update):
 if not callable(query):
     raise Exception("DB query function not loaded properly")
 
-
-
-TOKEN = os.getenv("BOT_TOKEN")
-if not TOKEN:
-    raise Exception("BOT_TOKEN missing")
-from telegram import Bot
-bot = Bot(token=TOKEN)
-
-print("🚀 Setting webhook on startup...")
-set_webhook()
-
-PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
-PAYSTACK_LINK = "https://paystack.shop/pay/bitewise"
-
-
-# 🔥 AUTO SET WEBHOOK ON START (WORKS WITH GUNICORN)
-def init_app():
-    print("🚀 Initializing bot...")
-    if os.getenv("BASE_URL"):
-        set_webhook()
-
-
-    
 def set_webhook():
     base_url = os.getenv("BASE_URL")
 
@@ -121,6 +97,23 @@ def set_webhook():
     )
 
     print("📡 Telegram response:", res.json())
+
+TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    raise Exception("BOT_TOKEN missing")
+from telegram import Bot
+bot = Bot(token=TOKEN)
+
+BASE_URL = os.getenv("BASE_URL")
+if not BASE_URL:
+    raise Exception("BASE_URL missing")
+
+
+    
+PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
+PAYSTACK_LINK = "https://paystack.shop/pay/bitewise"
+
+
 
 
 if not PAYSTACK_SECRET:
@@ -154,7 +147,7 @@ def create_payment_link(user_id):
 
     try:
         res_json = res.json()
-    except Excpetion:
+    except Exception:
         logging.error("Paystack returned invalid JSON")
         return
 
@@ -204,8 +197,8 @@ async def safe_edit(callback_query, text, reply_markup=None):
     except BadRequest:
         try:
             await callback_query.message.reply_text(text, reply_markup=reply_markup)
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"safe_edit fallback failed: {e}")
    
 
 # =========================
@@ -341,8 +334,8 @@ def safe_handler(fn):
                 cq = update.callback_query
                 if cq:
                     await cq.answer("Error occurred", show_alert=True)
-            except:
-                pass
+            except Exception as e:
+                logging.error(f"Handler fallback failed: {e}")
     return wrapper
 # =========================
 # ROUTES (UNCHANGED CORE)
@@ -350,6 +343,8 @@ def safe_handler(fn):
 @state("TITHE")
 async def tithe_screen(update, context):
     cq = get_cq(update)
+    if not cq:
+        return
     user_id = get_user_id(update)
     name = get_user_name(update)
     data = cq.data if cq else None
@@ -376,6 +371,8 @@ async def tithe_screen(update, context):
 @state("WELCOME")
 async def welcome_screen(update, context):
     cq = get_cq(update)
+    if not cq:
+        return
     user_id = get_user_id(update)
     name = get_user_name(update)
     data = cq.data if cq else None
@@ -400,12 +397,11 @@ async def welcome_screen(update, context):
 
 @state("BUDGET")
 async def budget_screen(update, context):
-    cq = get_cq(update)
-    user_id = get_user_id(update)
-    name = get_user_name(update)
 
-    # 👉 USER TYPED BUDGET
+    # ✅ HANDLE TEXT INPUT FIRST
     if update.message:
+        user_id = update.message.from_user.id
+
         try:
             amount = int(update.message.text.strip())
 
@@ -423,7 +419,13 @@ async def budget_screen(update, context):
         except:
             return await update.message.reply_text("❌ Enter a valid number")
 
-    # 👉 FIRST ENTRY SCREEN
+    # ✅ ONLY THEN handle callback
+    cq = get_cq(update)
+    if not cq:
+        return
+
+    name = get_user_name(update)
+
     return await safe_edit(
         cq,
         f"💰 {name}, enter your daily budget (₦)\nMinimum: ₦1500"
@@ -433,6 +435,8 @@ async def budget_screen(update, context):
 @state("ALLERGY")
 async def allergy_state(update, context):
     cq = get_cq(update)
+    if not cq:
+        return
     user_id = get_user_id(update)
     data = cq.data if cq else None
 
@@ -464,6 +468,8 @@ async def allergy_state(update, context):
 @state("MEAL")
 async def meal_state(update, context):
     cq = get_cq(update)
+    if not cq:
+        return
     user_id = get_user_id(update)
     data = cq.data if cq else None
 
@@ -493,6 +499,9 @@ async def meal_state(update, context):
 
 @state("MAIN_MENU")
 async def main_menu(update, context):
+    if not update.message:
+        return
+
     text = update.message.text.strip()
     user_id = update.message.from_user.id
 
@@ -573,6 +582,8 @@ async def open_allergy(update, context):
         return await render_allergy_ui(cq, user_id, get_user_name(update))
 async def reshuffle(update, context):
     cq = get_cq(update)
+    if not cq:
+        return
     user_id = get_user_id(update)
 
     data = cq.data if cq else None
@@ -656,6 +667,8 @@ async def route_callback(update, context):
             reply_markup=get_main_menu()
         )
         return
+    if data == "allergy_intro":
+        return await open_allergy(update, context)
     # 🔥 HANDLE GLOBAL FIRST
     if data and data.startswith("RESHUFFLE:"):
         return await reshuffle(update, context)
@@ -685,6 +698,9 @@ async def route_callback(update, context):
         
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+
     text = update.message.text.strip()
     user_id = update.message.from_user.id
 
