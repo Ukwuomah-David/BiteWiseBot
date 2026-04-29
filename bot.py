@@ -89,6 +89,9 @@ if not TOKEN:
 from telegram import Bot
 bot = Bot(token=TOKEN)
 
+print("🚀 Setting webhook on startup...")
+set_webhook()
+
 PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
 PAYSTACK_LINK = "https://paystack.shop/pay/bitewise"
 
