@@ -49,7 +49,10 @@ def telegram_webhook():
 
         print("✅ UPDATE PARSED:", update)
 
-        asyncio.run(dispatch(update))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(dispatch(update))
+        loop.close()
 
         return "ok", 200
 
@@ -186,11 +189,11 @@ def extend_subscription(user_id, days=30):
 # =========================
 # STATES
 # =========================
-STATE_TITHE = "tithe"
-STATE_WELCOME = "welcome"
-STATE_BUDGET = "budget"
-STATE_ALLERGY = "allergy"
-STATE_MEAL = "meal"
+STATE_TITHE = "TITHE"
+STATE_WELCOME = "WELCOME"
+STATE_BUDGET = "BUDGET"
+STATE_ALLERGY = "ALLERGY"
+STATE_MEAL = "MEAL"
 
 # =========================
 # SAFE EDIT
@@ -328,7 +331,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
     )
     set_state(user_id, "TITHE")
-    await run_fsm(update, context)   # ✅ ADD THIS
+    
 def safe_handler(fn):
     async def wrapper(update, context):
         try:
