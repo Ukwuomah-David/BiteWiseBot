@@ -351,11 +351,9 @@ async def tithe_screen(update, context):
     if not cq:
         return
 
-    name = get_user_name(update)
-
     return await safe_edit(
         cq,
-        f"💰 {name}, do you commit to tithing 10%?",
+        f"💰 {get_user_name(update)}, do you commit to tithing 10%?",
         InlineKeyboardMarkup([
             [InlineKeyboardButton("I agree ✅", callback_data="tithe_yes"),
              InlineKeyboardButton("No ❌", callback_data="tithe_no")]
@@ -367,17 +365,6 @@ async def welcome_screen(update, context):
     cq = get_cq(update)
     if not cq:
         return
-    user_id = get_user_id(update)
-    name = get_user_name(update)
-    data = cq.data if cq else None
-
-    
-        next_state = can_transition(user_id, data)
-        if next_state:
-            set_state(user_id, next_state)
-        else:
-            logging.warning(f"No transition for user={user_id} data={data}")
-            return await run_fsm(update, context)
 
     return await safe_edit(
         cq,
@@ -386,7 +373,6 @@ async def welcome_screen(update, context):
             [InlineKeyboardButton("➡️ Proceed", callback_data="proceed")]
         ])
     )
-
 
 @state("BUDGET")
 async def budget_screen(update, context):
@@ -406,7 +392,6 @@ async def budget_screen(update, context):
                 (amount, str(user_id))
             )
 
-            set_state(user_id, "ALLERGY")
             return await run_fsm(update, context)
 
         except:
@@ -430,8 +415,9 @@ async def allergy_state(update, context):
     cq = get_cq(update)
     if not cq:
         return
+
     user_id = get_user_id(update)
-    data = cq.data if cq else None
+    data = cq.data
 
     if data and data.startswith("TOGGLE_ALLERGY:"):
         allergy = data.split(":")[1]
@@ -448,14 +434,7 @@ async def allergy_state(update, context):
 
         return await render_allergy_ui(cq, user_id, get_user_name(update))
 
-    if data == "allergy_done":
-        next_state = can_transition(user_id, "allergy_done")
 
-        if not next_state:
-            return await cq.answer("Invalid transition", show_alert=True)
-
-        set_state(user_id, "MEAL")
-        return await run_fsm(update, context)
     
 
 @state("MEAL")
@@ -463,8 +442,9 @@ async def meal_state(update, context):
     cq = get_cq(update)
     if not cq:
         return
+
     user_id = get_user_id(update)
-    data = cq.data if cq else None
+    data = cq.data
 
     if data and data.startswith("TOGGLE_MEAL:"):
         meal = data.split(":")[1]
@@ -481,14 +461,7 @@ async def meal_state(update, context):
 
         return await render_meal_ui(cq, user_id, get_user_name(update))
 
-    if data == "meal_done":
-        next_state = can_transition(user_id, "meal_done")
-
-        if not next_state:
-            return await cq.answer("Invalid action", show_alert=True)
-
-        set_state(user_id, "MAIN_MENU")
-        return await run_fsm(update, context)
+    
 
 @state("MAIN_MENU")
 async def main_menu(update, context):
