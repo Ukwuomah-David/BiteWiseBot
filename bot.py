@@ -8,7 +8,7 @@ from telegram.ext import CallbackQueryHandler, ContextTypes
 from telegram.error import BadRequest
 from datetime import datetime, timedelta, UTC
 import engine as engine
-from db import query
+from db import query as safe_query
 from core import safe_get_user, parse_list, save_list, get_or_create_user
 from fsm_engine import state, run_fsm, set_state, can_transition, get_state
 import fsm_transitions  # VERY IMPORTANT (loads graph)
@@ -81,7 +81,7 @@ def build_inline_keyboard(buttons):
 def get_user_name(update):
     cq = get_cq(update)
     return cq.from_user.first_name if cq else update.message.from_user.first_name
-if not callable(query):
+if not callable(safe_query):
     raise Exception("DB query function not loaded properly")
 
 def set_webhook():
