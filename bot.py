@@ -616,7 +616,8 @@ async def dispatch(update):
 
     except Exception as e:
         logging.error(f"DISPATCH CRASH: {e}")
-
+    print("🚀 DISPATCH TYPE:",
+      "callback" if update.callback_query else "message")
 # =========================
 # HANDLERS (UNCHANGED)
 # =========================
@@ -664,6 +665,7 @@ async def route_callback(update, context):
         
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("📩 MESSAGE RECEIVED:", update.message.text)
     if not update.message:
         return
 
@@ -671,7 +673,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
 
     # ✅ ALWAYS HANDLE /start FIRST
-    if text == "/start":
+    if text.startswith("/start"):
         return await start(update, context)
 
     state = get_state(user_id)
