@@ -50,7 +50,10 @@ def telegram_webhook():
         print("✅ UPDATE PARSED:", update)
 
         # ✅ FIX: use asyncio.run (clean loop each time)
-        asyncio.run(dispatch(update))
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(dispatch(update))
+        loop.close()
 
         return "ok", 200
 
@@ -310,16 +313,21 @@ async def render_meal_ui(query, user_id, name):
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print("✅ START TRIGGERED")
+
     user_id = update.message.from_user.id
     name = update.message.from_user.first_name
 
     get_or_create_user(user_id, name)
-    user_id = update.message.from_user.id
+
     msg = get_today_meal(user_id)
 
+    # ✅ If meal exists → show and STOP
     if msg:
+        print("📦 Sending existing meal:", msg)
         await update.message.reply_text(msg)
         return
+
+    # ✅ Otherwise start onboarding
     await update.message.reply_text(
         f"👋 {name}, ready to build financial discipline?",
         reply_markup=InlineKeyboardMarkup([
@@ -327,8 +335,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("❌ No", callback_data="tithe_no")]
         ])
     )
-    set_state(user_id, "TITHE")
-    
+
+    # ✅ Only set state if none exists
+    if not get_state(user_id):
+        set_state(user_id, "TITHE")
+        
 def safe_handler(fn):
     async def wrapper(update, context):
         try:
